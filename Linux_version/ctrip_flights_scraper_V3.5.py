@@ -9,6 +9,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from selenium import webdriver
 from browser_network_capture import BrowserNetworkCaptureDriver
+from ctrip_dom_selectors import (
+    CtripSelectorMismatch,
+    current_departure_date,
+    wait_for_city_inputs,
+)
 from datetime import datetime as dt, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -550,78 +555,63 @@ class DataFetcher(object):
     def change_city(self):
         next_stage_flag = False
         try:
-            # 等待页面完成加载
-            WebDriverWait(self.driver, max_wait_time).until(
-                EC.presence_of_element_located(
-                    (By.CLASS_NAME, "form-input-v3"))
-            )
+            # Detect the current Ctrip form layout before touching city fields.
+            city_inputs = wait_for_city_inputs(self.driver, max_wait_time)
 
             # 检查注意事项和验证码
             if self.check_verification_code():
                 # 若出发地与目标值不符，则更改出发地
-                while self.city[0] not in self.driver.find_elements(
-                    By.CLASS_NAME, "form-input-v3"
-                )[0].get_attribute("value"):
+                while self.city[0] not in city_inputs[0].get_attribute("value"):
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[0]
+                            city_inputs[0]
                         )
                     )
                     ele.click()
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[0]
+                            city_inputs[0]
                         )
                     )
                     ele.send_keys(Keys.CONTROL + "a")
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[0]
+                            city_inputs[0]
                         )
                     )
                     ele.send_keys(self.city[0])
 
                 print(
-                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换城市【0】-{self.driver.find_elements(By.CLASS_NAME,"form-input-v3")[0].get_attribute("value")}'
+                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换城市【0】-{city_inputs[0].get_attribute("value")}'
                 )
 
                 # 若目的地与目标值不符，则更改目的地
-                while self.city[1] not in self.driver.find_elements(
-                    By.CLASS_NAME, "form-input-v3"
-                )[1].get_attribute("value"):
+                while self.city[1] not in city_inputs[1].get_attribute("value"):
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[1]
+                            city_inputs[1]
                         )
                     )
                     ele.click()
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[1]
+                            city_inputs[1]
                         )
                     )
                     ele.send_keys(Keys.CONTROL + "a")
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[1]
+                            city_inputs[1]
                         )
                     )
                     ele.send_keys(self.city[1])
 
                 print(
-                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换城市【1】-{self.driver.find_elements(By.CLASS_NAME,"form-input-v3")[1].get_attribute("value")}'
+                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换城市【1】-{city_inputs[1].get_attribute("value")}'
                 )
 
                 while (
-                    self.driver.find_elements(By.CSS_SELECTOR, "[aria-label=请选择日期]")[
-                        0
-                    ].get_attribute("value")
+                    current_departure_date(self.driver)
                     != self.date
                 ):
                     # 点击日期选择
@@ -749,19 +739,16 @@ class DataFetcher(object):
                                 ele.click()
                                 break
                 print(
-                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换日期-{self.driver.find_elements(By.CSS_SELECTOR,"[aria-label=请选择日期]")[0].get_attribute("value")}'
+                    f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：更换日期-{current_departure_date(self.driver)}'
                 )
 
-                while "(" not in self.driver.find_elements(
-                    By.CLASS_NAME, "form-input-v3"
-                )[0].get_attribute("value"):
+                while "(" not in city_inputs[0].get_attribute("value"):
                     # Enter搜索
                     # ele=WebDriverWait(self.driver, max_wait_time).until(element_to_be_clickable(its[1]))
                     # ele.send_keys(Keys.ENTER)
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[0]
+                            city_inputs[0]
                         )
                     )
                     ele.click()
@@ -776,16 +763,13 @@ class DataFetcher(object):
                     )
                     ele.click()
 
-                while "(" not in self.driver.find_elements(
-                    By.CLASS_NAME, "form-input-v3"
-                )[1].get_attribute("value"):
+                while "(" not in city_inputs[1].get_attribute("value"):
                     # Enter搜索
                     # ele=WebDriverWait(self.driver, max_wait_time).until(element_to_be_clickable(its[1]))
                     # ele.send_keys(Keys.ENTER)
                     ele = WebDriverWait(self.driver, max_wait_time).until(
                         element_to_be_clickable(
-                            self.driver.find_elements(
-                                By.CLASS_NAME, "form-input-v3")[1]
+                            city_inputs[1]
                         )
                     )
                     ele.click()
@@ -802,6 +786,11 @@ class DataFetcher(object):
 
                 next_stage_flag = True
 
+        except CtripSelectorMismatch as e:
+            print(
+                f'{time.strftime("%Y-%m-%d_%H-%M-%S")} change_city：携程 DOM selector 不兼容，停止自动重试：{e}'
+            )
+            return
         except Exception as e:
             # 错误次数+1
             self.err += 1
