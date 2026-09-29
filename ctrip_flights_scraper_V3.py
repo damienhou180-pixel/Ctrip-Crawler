@@ -1,17 +1,16 @@
-import magic
-import io
 import os
 import gzip
 import time
 import json
 import pandas as pd
-from seleniumwire import webdriver
+from selenium import webdriver
 from datetime import datetime as dt, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 import threading
+from browser_network_capture import BrowserNetworkCaptureDriver
 
 # 爬取的城市
 crawl_citys = ["上海", "香港", "东京"]
@@ -71,6 +70,9 @@ REQUIRED_COOKIES = ["AHeadUserInfo", "DUID", "IsNonUser", "_udl", "cticket", "lo
 def init_driver():
     # options = webdriver.ChromeOptions() # 创建一个配置对象
     options = webdriver.EdgeOptions()  # 创建一个配置对象
+    # Capture Chromium Network events directly; do not intercept TLS traffic.
+    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
     options.add_argument("--incognito")  # 隐身模式（无痕模式）
     # options.add_argument('--headless')  # 启用无头模式
     options.add_argument("--no-sandbox")
@@ -82,15 +84,12 @@ def init_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-software-rasterizer")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--ignore-certificate-errors")
-    options.add_argument("--ignore-certificate-errors-spki-list")
-    options.add_argument("--ignore-ssl-errors")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])  # 不显示正在受自动化软件控制的提示
     # 如果需要指定Chrome驱动的路径，取消下面这行的注释并设置正确的路径
     # chromedriver_path = '/path/to/chromedriver'
     # 如果需要指定路径，可以加上executable_path参数
     # driver = webdriver.Chrome(options=options)  
-    driver = webdriver.Edge(options=options)
+    driver = BrowserNetworkCaptureDriver(webdriver.Edge(options=options))
     driver.maximize_window()
 
     return driver
@@ -929,21 +928,10 @@ class DataFetcher(object):
 
     def decode_data(self):
         try:
-            # 使用python-magic库检查MIME类型
-            mime = magic.Magic()
-            file_type = mime.from_buffer(self.predata.response.body)
-
-            buf = io.BytesIO(self.predata.response.body)
-
-            if "gzip" in file_type:
-                gf = gzip.GzipFile(fileobj=buf)
-                self.dedata = gf.read().decode("UTF-8")
-            elif "JSON data" in file_type:
-                print(buf.read().decode("UTF-8"))
-            else:
-                print(f'{time.strftime("%Y-%m-%d_%H-%M-%S")} 未知的压缩格式：{file_type}')
-            
-            self.dedata = json.loads(self.dedata)
+            response_body = self.predata.response.body
+            if response_body.startswith(b"\x1f\x8b"):
+                response_body = gzip.decompress(response_body)
+            self.dedata = json.loads(response_body.decode("UTF-8"))
 
         except Exception as e:
             # 错误次数+1

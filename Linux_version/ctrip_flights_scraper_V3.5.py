@@ -1,12 +1,14 @@
 import gen_proxy_servers
-import magic
-import io
 import os
+import sys
 import gzip
 import time
 import json
 import pandas as pd
-from seleniumwire import webdriver
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from selenium import webdriver
+from browser_network_capture import BrowserNetworkCaptureDriver
 from datetime import datetime as dt, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -97,6 +99,9 @@ def kill_driver():
 
 def init_driver():
     options = webdriver.ChromeOptions()  # 创建一个配置对象
+    # Capture Chromium Network events directly; do not intercept TLS traffic.
+    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
     options.add_argument("--incognito")  # 隐身模式（无痕模式）
     options.add_argument("--headless")  # 启用无头模式
     options.add_argument("--no-sandbox")
@@ -107,9 +112,6 @@ def init_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-software-rasterizer")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--ignore-certificate-errors")
-    options.add_argument("--ignore-certificate-errors-spki-list")
-    options.add_argument("--ignore-ssl-errors")
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     options.add_experimental_option(
@@ -118,7 +120,7 @@ def init_driver():
     # options.page_load_strategy = 'eager'  # DOMContentLoaded事件触发即可
     if enable_proxy:
         options.add_argument("--proxy-server=socks5://127.0.0.1:1080")
-    driver = webdriver.Chrome(options=options)
+    driver = BrowserNetworkCaptureDriver(webdriver.Chrome(options=options))
     driver.set_page_load_timeout(max_wait_time*max_retry_time)  # 设置加载超时阈值
     # driver.maximize_window()
     driver.set_window_size(1280, 480)
@@ -938,21 +940,10 @@ class DataFetcher(object):
 
     def decode_data(self):
         try:
-            # 使用python-magic库检查MIME类型
-            mime = magic.Magic()
-            file_type = mime.from_buffer(self.predata.response.body)
-
-            buf = io.BytesIO(self.predata.response.body)
-
-            if "gzip" in file_type:
-                gf = gzip.GzipFile(fileobj=buf)
-                self.dedata = gf.read().decode("UTF-8")
-            elif "JSON data" in file_type:
-                print(buf.read().decode("UTF-8"))
-            else:
-                print(f'{time.strftime("%Y-%m-%d_%H-%M-%S")} 未知的压缩格式：{file_type}')
-            
-            self.dedata = json.loads(self.dedata)
+            response_body = self.predata.response.body
+            if response_body.startswith(b"\x1f\x8b"):
+                response_body = gzip.decompress(response_body)
+            self.dedata = json.loads(response_body.decode("UTF-8"))
 
         except Exception as e:
             # 错误次数+1
