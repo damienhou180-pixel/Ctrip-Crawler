@@ -2,11 +2,19 @@
      This excerpt records selectors only; it is not a full page archive. -->
 <div class="form-item-v3 flt-depart none-value">
   <label class="form-label-v3">出发地</label>
-  <div></div>
+  <div>
+    <input aria-label="可输入城市或机场" class="form-input-v3"
+           placeholder="可输入城市或机场" autocomplete="off" type="text"
+           value="上海(SHA)" name="owDCity">
+  </div>
 </div>
 <div class="form-item-v3 flt-arrival">
   <label class="form-label-v3">目的地</label>
-  <div></div>
+  <div>
+    <input aria-label="可输入城市或机场" class="form-input-v3"
+           placeholder="可输入城市或机场" autocomplete="off" type="text"
+           value="乌鲁木齐(乌鲁木齐天山国际机场)(URC)" name="owACity">
+  </div>
 </div>
 <div id="datePicker" class="form-item-v3-group">
   <div class="form-item-v3 flt-date flt-date-depart">
@@ -15,6 +23,8 @@
       <div u_key="date_picker"
            u_remark="日期选择框[flightWay:RT,date:2026-09-30,mode:departTime]"
            class="modifyDate depart-date">
+        <input aria-label="请选择日期" placeholder="yyyy-mm-dd" type="text"
+               value="2026-09-30" readonly="true">
         <div><div></div><span class="week">明天</span></div>
       </div>
     </span>

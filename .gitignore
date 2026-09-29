@@ -1,0 +1,11 @@
+# Local append-only price history and exported data
+/data/*.sqlite3
+/data/*.sqlite3-wal
+/data/*.sqlite3-shm
+/exports/
+/logs/
+
+# Python validation/runtime artifacts
+__pycache__/
+*.py[cod]
+.venv/

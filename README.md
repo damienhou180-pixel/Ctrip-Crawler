@@ -1,8 +1,14 @@
 # Ctrip-Crawler
 
-Ctrip-Crawler 是一款面向携程航班信息数据采集的专业爬虫工具，基于 Selenium 与 Chromium 浏览器原生 Network 事件构建浏览器自动化方案，解决直接调用 API 时面临的 IP 限制、JS 加密及验证码验证等问题。项目通过智能化错误处理、多账户登录、Cookie 缓存以及 IPV6 代理策略，确保数据采集的高效性与稳定性。
+## Daily price history collector
 
-> **温馨提示**：JS 逆向版本正在研发中，后续将进一步提升性能与扩展性。
+新的每日安全采集入口、SQLite schema、CSV 导出、运行方式和限制见 [DAILY_PRICE_HISTORY.md](DAILY_PRICE_HISTORY.md)。默认入口是 `python3 daily_price_collector.py run`，覆盖上海与北京、广州、深圳、成都、乌鲁木齐双向 10 条城市航线及 GMT+8 当日起未来 30 天，共 300 个搜索；仅保留直飞经济舱并追加到 SQLite。
+
+> **安全说明：** 新入口使用普通 Chromium、默认 TLS 校验、无账号/用户 Cookie、无代理或反自动化参数、单线程且至少 5 秒节流；登录、验证码、访问拒绝、未知 DOM 或响应不匹配会停止当前 run 并保留部分覆盖状态。此文档没有安装或启动每日 schedule。
+
+> **历史代码提示：** 以下原始说明描述的是旧版脚本的历史行为，其中提到的登录、Cookie、代理/IP 策略、重试和文件输出流程不适用于新的每日入口；不要把旧版脚本作为本任务的运行入口。
+
+---
 
 ------
 

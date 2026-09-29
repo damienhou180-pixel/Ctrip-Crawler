@@ -5,7 +5,9 @@ from selenium.webdriver.common.by import By
 
 from ctrip_dom_selectors import (
     CURRENT_ARRIVAL_FIELD_SELECTOR,
+    CURRENT_CITY_ACCESSIBLE_NAME,
     CURRENT_CITY_WRAPPERS,
+    CURRENT_DATE_ACCESSIBLE_NAME,
     CURRENT_DEPARTURE_DATE_ATTRIBUTE,
     CURRENT_DEPARTURE_DATE_SELECTOR,
     CURRENT_DEPARTURE_FIELD_SELECTOR,
@@ -13,6 +15,7 @@ from ctrip_dom_selectors import (
     LEGACY_CITY_INPUTS,
     CtripSelectorMismatch,
     current_departure_date,
+    current_departure_date_input,
     departure_date_from_remark,
     detect_city_form_mode,
     wait_for_city_inputs,
@@ -20,8 +23,22 @@ from ctrip_dom_selectors import (
 
 
 class FakeElement:
-    def __init__(self, attributes=None):
+    def __init__(self, attributes=None, *, role=None, name=None, children=None):
         self.attributes = attributes or {}
+        self.aria_role = role
+        self.accessible_name = name
+        self.children = children or []
+
+    def find_elements(self, by, selector):
+        if by != By.CSS_SELECTOR or selector != "*":
+            raise AssertionError(f"unexpected descendant query: {by} {selector}")
+        return list(self.children)
+
+    def is_displayed(self):
+        return True
+
+    def is_enabled(self):
+        return True
 
     def get_attribute(self, name):
         return self.attributes.get(name)
@@ -44,15 +61,29 @@ class CtripDomSelectorTests(unittest.TestCase):
             Path(__file__).parent / "fixtures" / "ctrip_current_form_excerpt.html"
         ).read_text(encoding="utf-8")
 
-    def test_captured_dom_has_current_wrappers_not_legacy_inputs_or_old_date_aria(self):
+    def test_captured_dom_has_current_wrappers_and_verified_accessible_inputs(self):
         self.assertIn('class="form-item-v3 flt-depart none-value"', self.fixture)
         self.assertIn('class="form-item-v3 flt-arrival"', self.fixture)
         self.assertIn('class="modifyDate depart-date"', self.fixture)
         self.assertIn('u_remark="日期选择框[flightWay:RT,date:2026-09-30,mode:departTime]"', self.fixture)
-        self.assertNotIn(LEGACY_CITY_INPUT_SELECTOR, self.fixture)
-        self.assertNotIn('aria-label="请选择日期"', self.fixture)
+        self.assertIn('aria-label="可输入城市或机场"', self.fixture)
+        self.assertIn('aria-label="请选择日期"', self.fixture)
+        self.assertIn('readonly="true"', self.fixture)
 
-    def test_detects_current_wrappers_and_fails_instead_of_waiting_for_stale_input(self):
+    def test_detects_current_wrappers_and_resolves_exact_accessible_city_textboxes(self):
+        departure_input = FakeElement(role="textbox", name=CURRENT_CITY_ACCESSIBLE_NAME)
+        arrival_input = FakeElement(role="textbox", name=CURRENT_CITY_ACCESSIBLE_NAME)
+        driver = FakeDriver(
+            {
+                LEGACY_CITY_INPUT_SELECTOR: [],
+                CURRENT_DEPARTURE_FIELD_SELECTOR: [FakeElement(children=[departure_input])],
+                CURRENT_ARRIVAL_FIELD_SELECTOR: [FakeElement(children=[arrival_input])],
+            }
+        )
+        self.assertEqual(detect_city_form_mode(driver), CURRENT_CITY_WRAPPERS)
+        self.assertEqual(wait_for_city_inputs(driver, timeout=0.1), [departure_input, arrival_input])
+
+    def test_current_wrappers_without_accessible_editors_fail_closed(self):
         driver = FakeDriver(
             {
                 LEGACY_CITY_INPUT_SELECTOR: [],
@@ -60,8 +91,7 @@ class CtripDomSelectorTests(unittest.TestCase):
                 CURRENT_ARRIVAL_FIELD_SELECTOR: [FakeElement()],
             }
         )
-        self.assertEqual(detect_city_form_mode(driver), CURRENT_CITY_WRAPPERS)
-        with self.assertRaisesRegex(CtripSelectorMismatch, CURRENT_DEPARTURE_FIELD_SELECTOR):
+        with self.assertRaisesRegex(CtripSelectorMismatch, "accessible textbox"):
             wait_for_city_inputs(driver, timeout=0.1)
 
     def test_retains_legacy_result_editor_when_two_inputs_really_exist(self):
@@ -81,6 +111,17 @@ class CtripDomSelectorTests(unittest.TestCase):
             }
         )
         self.assertEqual(current_departure_date(driver), "2026-09-30")
+
+    def test_resolves_date_editor_by_its_accessible_name_inside_date_control(self):
+        date_input = FakeElement(role="textbox", name=CURRENT_DATE_ACCESSIBLE_NAME)
+        driver = FakeDriver(
+            {
+                CURRENT_DEPARTURE_DATE_SELECTOR: [
+                    FakeElement(children=[date_input], attributes={CURRENT_DEPARTURE_DATE_ATTRIBUTE: "date:2026-09-30"})
+                ]
+            }
+        )
+        self.assertEqual(current_departure_date_input(driver, timeout=0.1), date_input)
 
     def test_invalid_or_missing_date_metadata_fails_clearly(self):
         with self.assertRaises(CtripSelectorMismatch):

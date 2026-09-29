@@ -1,0 +1,122 @@
+{
+  "flightSegments": [
+    {
+      "departureCityName": "上海",
+      "arrivalCityName": "北京",
+      "departureDate": "2026-09-30"
+    }
+  ],
+  "data": {
+    "flightItineraryList": [
+      {
+        "itineraryId": "MU5101_0",
+        "flightSegments": [
+          {
+            "transferCount": 0,
+            "flightList": [
+              {
+                "flightNo": "MU5101",
+                "marketAirlineName": "东方航空",
+                "departureCityName": "上海",
+                "departureAirportName": "上海虹桥国际机场",
+                "departureAirportCode": "SHA",
+                "departureDateTime": "2026-09-30 08:30",
+                "arrivalCityName": "北京",
+                "arrivalAirportName": "北京首都国际机场",
+                "arrivalAirportCode": "PEK",
+                "arrivalDateTime": "2026-09-30 11:00",
+                "stopCount": 0
+              }
+            ]
+          }
+        ],
+        "priceList": [
+          {
+            "cabin": "Y",
+            "adultPrice": 1000,
+            "adultTax": 50,
+            "fareBasis": "Y-FULL",
+            "seatCount": 6
+          },
+          {
+            "cabin": "Y",
+            "adultPrice": 1200,
+            "adultTax": 40,
+            "fareBasis": "Y-SAVER",
+            "seatCount": 3
+          },
+          {
+            "cabin": "C",
+            "adultPrice": 2500,
+            "adultTax": 50,
+            "fareBasis": "BUSINESS"
+          }
+        ]
+      },
+      {
+        "itineraryId": "CZ6000_CZ6001",
+        "flightSegments": [
+          {
+            "transferCount": 1,
+            "stopList": [
+              {
+                "cityName": "南京",
+                "airportName": "南京禄口国际机场",
+                "duration": 95
+              }
+            ],
+            "flightList": [
+              {
+                "flightNo": "CZ6000",
+                "marketAirlineName": "南方航空",
+                "departureDateTime": "2026-09-30 09:00",
+                "arrivalDateTime": "2026-09-30 10:30",
+                "stopCount": 0
+              },
+              {
+                "flightNo": "CZ6001",
+                "marketAirlineName": "南方航空",
+                "departureDateTime": "2026-09-30 12:00",
+                "arrivalDateTime": "2026-09-30 14:00",
+                "stopCount": 0
+              }
+            ]
+          }
+        ],
+        "priceList": [
+          {
+            "cabin": "Y",
+            "adultPrice": 700,
+            "adultTax": 50,
+            "fareBasis": "CONNECTING-Y"
+          }
+        ]
+      },
+      {
+        "itineraryId": "CA101_0",
+        "flightSegments": [
+          {
+            "transferCount": 0,
+            "flightList": [
+              {
+                "flightNo": "CA101",
+                "marketAirlineName": "中国国际航空",
+                "departureDateTime": "2026-09-30 13:30",
+                "arrivalDateTime": "2026-09-30 16:00",
+                "stopCount": 0
+              }
+            ]
+          }
+        ],
+        "priceList": [
+          {
+            "cabin": "C",
+            "adultPrice": 2400,
+            "adultTax": 50,
+            "fareBasis": "BUSINESS-ONLY"
+          }
+        ]
+      }
+    ]
+  }
+}
