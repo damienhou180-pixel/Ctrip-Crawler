@@ -16,7 +16,6 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -36,7 +35,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
-from browser_network_capture import BrowserNetworkCaptureDriver
 from ctrip_dom_selectors import (
     CURRENT_ARRIVAL_FIELD_SELECTOR,
     CURRENT_DEPARTURE_DATE_SELECTOR,
@@ -46,11 +44,11 @@ from ctrip_dom_selectors import (
     current_departure_date_input,
     wait_for_city_inputs,
 )
+from ctrip_visible_results import VisibleCardParseError, parse_visible_flight_cards
 from price_history import PriceHistoryStore, gmt8_now
 
 HOME_URL = "https://flights.ctrip.com/online/channel/domestic"
-SOURCE = "Ctrip public domestic-flight UI via Chromium Network events"
-BATCH_SEARCH_PATH = "/international/search/api/search/batchSearch"
+SOURCE = "Ctrip public domestic-flight UI visible result cards"
 DEFAULT_DATABASE = Path(__file__).resolve().parent / "data" / "ctrip_price_history.sqlite3"
 TIME_ZONE = ZoneInfo("Asia/Shanghai")
 CITY_ACCESSIBLE_NAME = "可输入城市或机场"
@@ -67,7 +65,7 @@ MINIMUM_QUERY_DELAY_SECONDS = 5.0
 
 
 class CollectionError(RuntimeError):
-    """A non-retryable DOM, network, or parsing failure for this run."""
+    """A non-retryable visible-UI, access, or parsing failure for this run."""
 
 
 class AccessBlocked(CollectionError):
@@ -485,6 +483,19 @@ def _page_block_reason(driver: Any) -> str | None:
     blocked_phrases = (
         "access denied",
         "forbidden",
+        "login required",
+        "please log in to continue",
+        "sign in to continue",
+        "captcha",
+        "verification required",
+        "rate limit",
+        "too many requests",
+        "429 too many",
+        "请先登录",
+        "请登录后",
+        "登录后继续",
+        "验证码",
+        "安全验证",
         "访问被拒绝",
         "拒绝访问",
         "访问频繁",
@@ -505,7 +516,120 @@ def _assert_not_blocked(driver: Any) -> None:
         raise AccessBlocked(reason)
 
 
-def create_driver() -> BrowserNetworkCaptureDriver:
+def _exact_visible_text_elements(driver: Any, text: str) -> list[Any]:
+    elements = driver.find_elements(By.XPATH, f'//*[normalize-space(text())="{text}"]')
+    result = []
+    for element in elements:
+        try:
+            if element.is_displayed() and (element.text or "").strip() == text:
+                result.append(element)
+        except WebDriverException:
+            continue
+    return result
+
+
+def _ensure_economy_filter(driver: Any, timeout: float = 4.0) -> None:
+    """Use the visible cabin menu and verify the exact economy-only selection."""
+    selected = _exact_visible_text_elements(driver, "经济舱")
+    unrestricted = _exact_visible_text_elements(driver, "不限舱等")
+    if len(selected) == 1 and not unrestricted:
+        return
+    if len(unrestricted) != 1:
+        raise CtripSelectorMismatch(
+            "The visible cabin selector was not uniquely identified as either economy-only or unrestricted."
+        )
+    unrestricted[0].click()
+
+    def economy_options(current_driver: Any) -> list[Any] | bool:
+        options = []
+        for element in current_driver.find_elements(By.CSS_SELECTOR, "[role='listitem']"):
+            try:
+                if element.is_displayed() and (element.text or "").strip() == "经济舱":
+                    options.append(element)
+            except WebDriverException:
+                continue
+        return options or False
+
+    try:
+        options = WebDriverWait(driver, timeout, poll_frequency=0.2).until(economy_options)
+    except TimeoutException as exc:
+        raise CtripSelectorMismatch("The visible cabin menu did not expose an economy-class option.") from exc
+    if len(options) != 1:
+        raise CtripSelectorMismatch(
+            f"The visible cabin menu exposed {len(options)} exact economy-class options."
+        )
+    options[0].click()
+    try:
+        WebDriverWait(driver, timeout, poll_frequency=0.2).until(
+            lambda d: len(_exact_visible_text_elements(d, "经济舱")) == 1
+            and not _exact_visible_text_elements(d, "不限舱等")
+        )
+    except TimeoutException as exc:
+        raise CtripSelectorMismatch("The visible economy-only cabin selection did not verify.") from exc
+
+
+_VISIBLE_FLIGHT_NUMBER = re.compile(r"(?<![A-Z0-9])[A-Z0-9]{2}\s*-?\s*\d{3,4}(?!\d)")
+_VISIBLE_CNY_PRICE = re.compile(r"(?:¥|￥|CNY)\s*\d", re.IGNORECASE)
+_VISIBLE_CLOCK = re.compile(r"(?<!\d)(?:[01]\d|2[0-3]):[0-5]\d(?!\d)")
+_NO_FLIGHTS_PHRASES = (
+    "暂无航班",
+    "没有符合条件的航班",
+    "未找到符合条件的航班",
+    "未查询到航班",
+    "抱歉，暂时没有航班",
+    "no flights found",
+)
+
+
+def _visible_result_card_texts(driver: Any) -> list[str]:
+    """Read rendered text from displayed, accessible flight-card elements only."""
+    by_flight_number: dict[str, str] = {}
+    for element in driver.find_elements(By.CSS_SELECTOR, "*"):
+        try:
+            if not element.is_displayed():
+                continue
+            text = "\n".join(
+                line.strip() for line in (element.text or "").splitlines() if line.strip()
+            )
+            if not text or len(text) > 600 or "经济舱" not in text:
+                continue
+            matches = list(_VISIBLE_FLIGHT_NUMBER.finditer(text))
+            flight_numbers = {
+                re.sub(r"[\s-]", "", match.group(0)).upper() for match in matches
+            }
+            if len(flight_numbers) != 1:
+                continue
+            if not _VISIBLE_CNY_PRICE.search(text) or len(_VISIBLE_CLOCK.findall(text)) < 2:
+                continue
+            accessible_name = (element.accessible_name or "").strip()
+            if not accessible_name or len(accessible_name) > 80:
+                continue
+            flight_number = next(iter(flight_numbers))
+            current = by_flight_number.get(flight_number)
+            if current is None or len(text) > len(current):
+                by_flight_number[flight_number] = text
+        except WebDriverException:
+            continue
+    return list(by_flight_number.values())
+
+
+def _visible_results_ready(
+    driver: Any,
+) -> tuple[str, list[str]] | tuple[str, list[str], str] | bool:
+    _assert_not_blocked(driver)
+    cards = _visible_result_card_texts(driver)
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+    except WebDriverException:
+        return False
+    if cards:
+        return ("cards", cards, body_text)
+    if any(phrase in body_text for phrase in _NO_FLIGHTS_PHRASES):
+        return ("empty", [])
+    return False
+
+
+def create_driver() -> Any:
     proxy_env_names = {
         "http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "socks_proxy",
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "SOCKS_PROXY",
@@ -516,12 +640,9 @@ def create_driver() -> BrowserNetworkCaptureDriver:
             "Proxy environment variables are configured; the collector will not use a proxy."
         )
 
-    options = webdriver.ChromeOptions()
-    # Chromium's native performance log/CDP channel is used only to capture the
-    # response generated by the visible UI. No TLS override, proxy, or stealth flag.
-    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    options.add_experimental_option("perfLoggingPrefs", {"enableNetwork": True})
-    raw_driver = webdriver.Chrome(options=options)
+    # Plain user-facing browser defaults only: no CDP logging, interceptors,
+    # proxy, certificate override, headless setting, or stealth option.
+    raw_driver = webdriver.Chrome(options=webdriver.ChromeOptions())
     proxy = raw_driver.capabilities.get("proxy") or {}
     proxy_type = str(proxy.get("proxyType", "direct")).lower()
     if proxy_type not in ("direct", "unspecified"):
@@ -530,7 +651,7 @@ def create_driver() -> BrowserNetworkCaptureDriver:
     if raw_driver.capabilities.get("acceptInsecureCerts") is True:
         raw_driver.quit()
         raise CollectionError("Browser certificate verification is not at its default secure setting.")
-    return BrowserNetworkCaptureDriver(raw_driver)
+    return raw_driver
 
 
 def _safe_error(error: BaseException) -> str:
@@ -539,258 +660,8 @@ def _safe_error(error: BaseException) -> str:
     return text[:1200]
 
 
-def _decimal(value: Any, field: str) -> Decimal:
-    if value is None or value == "":
-        raise ValueError(f"Missing fare field {field}.")
-    try:
-        return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"Invalid fare field {field}: {value!r}.") from exc
-
-
-def _money_text(value: Decimal | None) -> str | None:
-    return format(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ".2f") if value is not None else None
-
-
-def _economy_fare(price: dict[str, Any]) -> Decimal:
-    adult_price = _decimal(price.get("adultPrice"), "adultPrice")
-    if "adultTax" in price and price.get("adultTax") is not None:
-        adult_tax = _decimal(price["adultTax"], "adultTax")
-    else:
-        sort_price = _decimal(price.get("sortPrice", adult_price), "sortPrice")
-        estimated_tax = sort_price - adult_price if not price.get("freeOilFeeAndTax") else Decimal("0")
-        adult_tax = estimated_tax.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return (adult_price + adult_tax).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-def _as_nonnegative_int(value: Any, field: str) -> int:
-    try:
-        number = int(value or 0)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid {field}: {value!r}.") from exc
-    if number < 0:
-        raise ValueError(f"Invalid negative {field}: {value!r}.")
-    return number
-
-
-def _is_login_required(payload: Any) -> bool:
-    if isinstance(payload, dict):
-        for key, value in payload.items():
-            if str(key).lower() in {"needuserlogin", "needlogin", "requirelogin"} and value is True:
-                return True
-            if _is_login_required(value):
-                return True
-    elif isinstance(payload, list):
-        return any(_is_login_required(item) for item in payload)
-    return False
-
-
-def _response_route_metadata(payload: dict[str, Any]) -> dict[str, Any] | None:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    segments = payload.get("flightSegments") or data.get("flightSegments")
-    if not isinstance(segments, list) or not segments or not isinstance(segments[0], dict):
-        return None
-    return segments[0]
-
-
-def _validate_request_body(request_body: bytes, query: Query) -> None:
-    """Verify the route/date the visible page actually submitted before parsing fares."""
-    if not request_body:
-        raise CollectionError("Captured search request omitted its body; route/date cannot be verified.")
-    try:
-        request_payload = json.loads(request_body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CollectionError("Captured search request body was not valid UTF-8 JSON.") from exc
-    segments = request_payload.get("flightSegments") if isinstance(request_payload, dict) else None
-    if not isinstance(segments, list) or not segments or not isinstance(segments[0], dict):
-        raise CollectionError("Captured request omitted the observed flightSegments query fields.")
-    segment = segments[0]
-    observed = (
-        segment.get("departureCityName"),
-        segment.get("arrivalCityName"),
-        segment.get("departureDate"),
-    )
-    expected = (query.departure_city, query.arrival_city, query.departure_date)
-    if observed != expected:
-        raise CollectionError(
-            f"Submitted request route/date did not match scope (expected={expected!r}, observed={observed!r})."
-        )
-    if query.departure_airport_code or query.arrival_airport_code:
-        airport_codes = (
-            segment.get("departureAirportCode"),
-            segment.get("arrivalAirportCode"),
-        )
-        expected_codes = (
-            query.departure_airport_code,
-            query.arrival_airport_code,
-        )
-        if None in expected_codes or airport_codes != expected_codes:
-            raise CollectionError(
-                "Submitted request omitted or mismatched the exact airport codes "
-                f"(expected={expected_codes!r}, observed={airport_codes!r})."
-            )
-
-
-def parse_response_payload(
-    payload: dict[str, Any],
-    query: Query,
-    captured_at: str,
-    source: str = SOURCE,
-    *,
-    request_route_verified: bool = False,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Return only direct economy fare cards plus a separate all-itinerary summary."""
-    if _is_login_required(payload):
-        raise AccessBlocked("Flight response indicated login is required.")
-    route_meta = _response_route_metadata(payload)
-    if route_meta is None and not request_route_verified:
-        raise CollectionError(
-            "Response omitted route metadata and no captured request proof was supplied."
-        )
-    if route_meta is not None:
-        expected = (query.departure_city, query.arrival_city, query.departure_date)
-        observed = (
-            route_meta.get("departureCityName"),
-            route_meta.get("arrivalCityName"),
-            route_meta.get("departureDate"),
-        )
-        if observed != expected:
-            raise CollectionError(
-                f"Response route/date did not match request (expected={expected!r}, observed={observed!r})."
-            )
-
-    data = payload.get("data")
-    if not isinstance(data, dict) or not isinstance(data.get("flightItineraryList"), list):
-        raise CollectionError("Response omitted data.flightItineraryList; schema changed or failed.")
-    itineraries = data["flightItineraryList"]
-    observations: list[dict[str, Any]] = []
-    counts_by_stops: dict[int, int] = {}
-    min_by_stops: dict[int, Decimal] = {}
-    all_economy_prices: list[Decimal] = []
-    direct_economy_prices: list[Decimal] = []
-    direct_count = 0
-
-    for itinerary in itineraries:
-        if not isinstance(itinerary, dict):
-            raise CollectionError("Response contained a non-object flight itinerary.")
-        segments = itinerary.get("flightSegments") or []
-        if not segments or not isinstance(segments[0], dict):
-            raise CollectionError("Flight itinerary omitted its first flight segment.")
-        segment = segments[0]
-        flights = segment.get("flightList") or []
-        if not isinstance(flights, list) or not flights:
-            raise CollectionError("Flight segment omitted flightList.")
-        flight = flights[0]
-        transfer_count = _as_nonnegative_int(
-            segment.get("transferCount", itinerary.get("transferCount", 0)), "transferCount"
-        )
-        stop_count = _as_nonnegative_int(flight.get("stopCount", 0), "stopCount")
-        stop_list = segment.get("stopList") or flight.get("stopList") or []
-        stops = max(transfer_count, stop_count, max(0, len(flights) - 1), len(stop_list))
-        is_direct = stops == 0 and len(flights) == 1 and not stop_list
-        if is_direct:
-            direct_count += 1
-            if query.departure_airport_code or query.arrival_airport_code:
-                observed_airports = (
-                    flight.get("departureAirportCode"),
-                    flight.get("arrivalAirportCode"),
-                )
-                expected_airports = (
-                    query.departure_airport_code,
-                    query.arrival_airport_code,
-                )
-                if None in expected_airports or observed_airports != expected_airports:
-                    raise CollectionError(
-                        "Direct itinerary airport codes did not match the selected airport pair "
-                        f"(expected={expected_airports!r}, observed={observed_airports!r})."
-                    )
-
-        price_list = itinerary.get("priceList") or []
-        if not isinstance(price_list, list):
-            raise CollectionError("Flight itinerary priceList is not a list.")
-        for price in price_list:
-            if not isinstance(price, dict):
-                raise CollectionError("Response contained a non-object fare card.")
-            if str(price.get("cabin", "")).upper() != "Y":
-                continue
-            fare = _economy_fare(price)
-            all_economy_prices.append(fare)
-            counts_by_stops[stops] = counts_by_stops.get(stops, 0) + 1
-            if stops not in min_by_stops or fare < min_by_stops[stops]:
-                min_by_stops[stops] = fare
-            if not is_direct:
-                continue
-            direct_economy_prices.append(fare)
-            flight_no = str(
-                flight.get("flightNo")
-                or itinerary.get("flightNo")
-                or str(itinerary.get("itineraryId", "")).split("_")[0]
-            ).strip()
-            if not flight_no:
-                raise CollectionError("Direct economy fare card omitted a flight number.")
-            observations.append(
-                {
-                    "departure_airport": flight.get("departureAirportName"),
-                    "departure_airport_code": flight.get("departureAirportCode"),
-                    "arrival_airport": flight.get("arrivalAirportName"),
-                    "arrival_airport_code": flight.get("arrivalAirportCode"),
-                    "flight_no": flight_no,
-                    "airline": flight.get("marketAirlineName") or flight.get("operateAirlineName"),
-                    "departure_time": flight.get("departureDateTime"),
-                    "arrival_time": flight.get("arrivalDateTime"),
-                    "economy_fare_cny": _money_text(fare),
-                    "currency": "CNY",
-                    "stops": stops,
-                    "direct": 1,
-                    "economy": 1,
-                    "status": "ok",
-                    "error": None,
-                    "flight_card_json": json.dumps(itinerary, ensure_ascii=False, sort_keys=True),
-                    "fare_card_json": json.dumps(price, ensure_ascii=False, sort_keys=True),
-                }
-            )
-
-    connecting_count = len(itineraries) - direct_count
-    summary = {
-        "itinerary_count": len(itineraries),
-        "direct_itinerary_count": direct_count,
-        "connecting_itinerary_count": connecting_count,
-        "all_economy_min_fare_cny": _money_text(min(all_economy_prices) if all_economy_prices else None),
-        "direct_economy_min_fare_cny": _money_text(min(direct_economy_prices) if direct_economy_prices else None),
-        "transfer_summary": {
-            "economy_fare_card_count_by_stops": {str(key): counts_by_stops[key] for key in sorted(counts_by_stops)},
-            "economy_min_fare_cny_by_stops": {
-                str(key): _money_text(min_by_stops[key]) for key in sorted(min_by_stops)
-            },
-        },
-        # Summary fields intentionally exclude flight/fare-card arrays.
-        "summary": {
-            "has_connecting_itineraries": connecting_count > 0,
-            "no_economy_fares": not all_economy_prices,
-        },
-    }
-    return observations, summary
-
-
-def _parse_response_body(body: bytes) -> dict[str, Any]:
-    if body.startswith(b"\x1f\x8b"):
-        import gzip
-
-        body = gzip.decompress(body)
-    try:
-        result = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        lowered = body[:4000].decode("utf-8", errors="ignore").lower()
-        if any(term in lowered for term in ("access denied", "forbidden", "captcha", "验证码", "访问频繁")):
-            raise AccessBlocked("Search response contained an access-denial or challenge page.") from exc
-        raise CollectionError("Search response was not valid UTF-8 JSON.") from exc
-    if not isinstance(result, dict):
-        raise CollectionError("Search response JSON root was not an object.")
-    return result
-
-
-def collect_one_query(driver: BrowserNetworkCaptureDriver, query: Query) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
-    """Submit exactly one visible UI query and return its captured API response."""
+def collect_one_query(driver: Any, query: Query) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    """Submit exactly one visible UI query and parse displayed result-card text only."""
     if not all((query.departure_airport_code, query.departure_airport_name, query.arrival_airport_code, query.arrival_airport_name)):
         raise CollectionError("Airport-level scope is required; city-only queries are not allowed.")
     driver.get(HOME_URL)
@@ -831,34 +702,34 @@ def collect_one_query(driver: BrowserNetworkCaptureDriver, query: Query) -> tupl
     _assert_not_blocked(driver)
     choose_departure_date(driver, query.departure_date)
     _ensure_one_way(driver)
+    _ensure_economy_filter(driver)
     _assert_not_blocked(driver)
 
-    driver.clear_requests()
     search_buttons = driver.find_elements(By.CSS_SELECTOR, ".search-btn")
     if len(search_buttons) != 1 or not search_buttons[0].is_displayed() or not search_buttons[0].is_enabled():
         raise CtripSelectorMismatch("Expected one visible, enabled search button.")
     search_buttons[0].click()
 
     try:
-        request = driver.wait_for_request(BATCH_SEARCH_PATH, timeout=20)
-    except TimeoutError as exc:
+        result_state = WebDriverWait(driver, 30, poll_frequency=0.5).until(_visible_results_ready)
+    except TimeoutException as exc:
         _assert_not_blocked(driver)
-        raise CollectionError("No batch-search response was captured; no retry was attempted.") from exc
+        raise CollectionError(
+            "No visible flight result cards or recognized no-flight message appeared; no retry was attempted."
+        ) from exc
     _assert_not_blocked(driver)
-    if request.response is None:
-        raise CollectionError("Captured search request had no response.")
-    if request.response.status_code in (401, 403, 429):
-        raise AccessBlocked(f"Search response HTTP status {request.response.status_code}.")
-    if request.response.status_code < 200 or request.response.status_code >= 300:
-        raise CollectionError(f"Search response HTTP status {request.response.status_code}.")
-    payload = _parse_response_body(request.response.body)
-    if _is_login_required(payload):
-        raise AccessBlocked("Flight response indicated login is required.")
-    _validate_request_body(request.body, query)
+    _, card_texts, visible_page_text = result_state
     captured_at = gmt8_now()
-    observations, summary = parse_response_payload(
-        payload, query, captured_at, request_route_verified=True
-    )
+    try:
+        observations, summary = parse_visible_flight_cards(
+            card_texts,
+            query,
+            captured_at,
+            economy_filter_verified=True,
+            visible_page_text=visible_page_text,
+        )
+    except VisibleCardParseError as exc:
+        raise CollectionError(f"Visible result-card parsing failed: {exc}") from exc
     query_status = "success" if observations else "no_results"
     return observations, summary, query_status
 

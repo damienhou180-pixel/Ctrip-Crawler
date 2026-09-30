@@ -8,20 +8,18 @@ from datetime import date
 from pathlib import Path
 
 from daily_price_collector import (
-    CollectionError,
     Query,
     _selected_city_value,
     _candidate_city_options,
     _candidate_airport_options,
     _airport_identity,
+    _page_block_reason,
     _selected_airport_value,
     _visible_city_suggestions,
     choose_city,
     choose_airport,
     build_date_window,
     build_scope,
-    parse_response_payload,
-    _validate_request_body,
     run_collection,
 )
 from airport_scope import (
@@ -39,10 +37,10 @@ from airport_scope import (
 )
 from price_history import PriceHistoryStore, SCHEMA_VERSION
 from ctrip_dom_selectors import CtripSelectorMismatch
+from ctrip_visible_results import parse_visible_flight_cards
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_batch_search_sample.json"
 CITY_SUGGESTIONS_FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_city_suggestions_excerpt.html"
 DIRECTORY_FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_airport_directory_snapshot.json"
 SAMPLE_QUERY = Query("上海", "北京", "2026-09-30", "SHA", "虹桥国际机场", "PEK", "首都国际机场")
@@ -74,30 +72,16 @@ def synthetic_complete_inventory():
 
 
 def sample_parsed():
-    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    return parse_response_payload(payload, SAMPLE_QUERY, CAPTURED_AT)
-
-
-def make_flight_observation():
-    return {
-        "departure_airport": "上海虹桥国际机场",
-        "departure_airport_code": "SHA",
-        "arrival_airport": "北京首都国际机场",
-        "arrival_airport_code": "PEK",
-        "flight_no": "MU5101",
-        "airline": "东方航空",
-        "departure_time": "2026-09-30 08:30",
-        "arrival_time": "2026-09-30 11:00",
-        "economy_fare_cny": "1050.00",
-        "currency": "CNY",
-        "stops": 0,
-        "direct": 1,
-        "economy": 1,
-        "status": "ok",
-        "error": None,
-        "flight_card_json": '{"itineraryId":"MU5101_0"}',
-        "fare_card_json": '{"cabin":"Y","adultPrice":1000,"adultTax":50}',
-    }
+    visible_cards = [
+        "东方航空 MU5101 空客321 08:30 虹桥国际机场 T2 11:00 首都国际机场 T2 ¥ 1050 起 经济舱 直飞",
+        "中国国航 CA1501 空客330 09:15 虹桥国际机场 T2 11:45 首都国际机场 T3 ¥ 1240 起 经济舱 直飞",
+    ]
+    return parse_visible_flight_cards(
+        visible_cards,
+        SAMPLE_QUERY,
+        CAPTURED_AT,
+        economy_filter_verified=True,
+    )
 
 
 class DailyScopeTests(unittest.TestCase):
@@ -168,12 +152,15 @@ class DailyScopeTests(unittest.TestCase):
         self.assertEqual(directory_plan["distinct_airport_pairs_per_period"], 14)
         self.assertEqual(directory_plan["directed_routes_per_departure_date"], 28)
         self.assertEqual(directory_plan["directory_based_candidate_queries"], 840)
-        self.assertIsNone(report["S"])
-        self.assertIsNone(report["expected_queries"])
-        self.assertEqual(set(report["unverified_cities"]), set(CITY_HUBS))
+        self.assertEqual(report["S"], 7)
+        self.assertEqual(report["expected_queries"], 840)
+        self.assertEqual(report["unverified_cities"], [])
         for city in CITY_HUBS:
-            self.assertFalse(report["airport_counts_by_city"][city]["selector_complete"])
-            self.assertIsNone(report["airport_counts_by_city"][city]["n_i"])
+            self.assertTrue(report["airport_counts_by_city"][city]["selector_complete"])
+            self.assertEqual(
+                report["airport_counts_by_city"][city]["n_i"],
+                {"北京": 2, "广州": 1, "深圳": 1, "成都": 2, "乌鲁木齐": 1}[city],
+            )
 
     def test_general_aviation_options_are_excluded_from_scheduled_passenger_scope(self):
         snapshot = json.loads(DIRECTORY_FIXTURE.read_text(encoding="utf-8"))
@@ -207,7 +194,7 @@ class DailyScopeTests(unittest.TestCase):
             report["airport_counts_by_city"]["北京"]["excluded_general_aviation_airports"],
             [{"name": "密云穆家峪通用机场", "code": "MY2"}],
         )
-        self.assertEqual(report["airport_counts_by_city"]["北京"]["n_i"], None)
+        self.assertEqual(report["airport_counts_by_city"]["北京"]["n_i"], 2)
 
         # Even a mistakenly complete inventory cannot smuggle a GA airport into
         # the matrix's eligible scheduled-passenger list.
@@ -228,31 +215,36 @@ class DailyScopeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scheduled_civil_passenger"):
             build_matrix_plan(bad_inventory)
 
-    def test_current_cities_without_complete_evidence_are_reported_and_fail_closed(self):
+    def test_current_cities_have_complete_visible_evidence_and_build_exact_scope(self):
         report = coverage_report()
         counts = report["airport_counts_by_city"]
         self.assertEqual(counts["成都"]["directory_entry_count"], 2)
         for city in CITY_HUBS:
-            self.assertEqual(counts[city]["selector_complete"], False)
-            self.assertIsNone(counts[city]["n_i"])
-        self.assertEqual(report["S"], None)
-        self.assertEqual(report["expected_queries"], None)
+            self.assertTrue(counts[city]["selector_complete"])
+            self.assertIsNotNone(counts[city]["n_i"])
+        self.assertEqual(report["S"], 7)
+        self.assertEqual(report["expected_queries"], 840)
+        self.assertEqual(len(build_scope(date(2026, 9, 30))), 840)
         with self.assertRaises(AirportCoverageUnverified):
-            build_matrix_plan()
+            incomplete = dict(DESTINATION_AIRPORTS)
+            incomplete["北京"] = replace(DESTINATION_AIRPORTS["北京"], selector_complete=False)
+            build_matrix_plan(incomplete)
         with self.assertRaises(AirportCoverageUnverified):
-            build_scope(date(2026, 9, 30))
+            build_scope(date(2026, 9, 30), incomplete)
 
-    def test_unverified_scope_is_rejected_before_database_or_browser_access(self):
+    def test_incomplete_scope_is_rejected_before_database_or_browser_access(self):
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "must-not-be-created.sqlite3"
             called = []
+            incomplete = dict(DESTINATION_AIRPORTS)
+            incomplete["北京"] = replace(DESTINATION_AIRPORTS["北京"], selector_complete=False)
 
             def driver_factory():
                 called.append(True)
                 raise AssertionError("browser must not start for incomplete airport evidence")
 
             with self.assertRaises(AirportCoverageUnverified):
-                run_collection(database, driver_factory=driver_factory)
+                run_collection(database, driver_factory=driver_factory, inventory=incomplete)
             self.assertFalse(database.exists())
             self.assertEqual(called, [])
 
@@ -397,64 +389,45 @@ class DailyScopeTests(unittest.TestCase):
         self.assertEqual(len(prefilled.sent), 2)
 
 
-class ResponseParsingTests(unittest.TestCase):
-    def test_keeps_only_direct_economy_cards_and_separates_transfer_summary(self):
-        observations, summary = sample_parsed()
-        self.assertEqual(len(observations), 2)
-        self.assertEqual({item["flight_no"] for item in observations}, {"MU5101"})
-        self.assertEqual({item["economy_fare_cny"] for item in observations}, {"1050.00", "1240.00"})
-        for item in observations:
-            self.assertEqual(item["currency"], "CNY")
-            self.assertEqual(item["direct"], 1)
-            self.assertEqual(item["economy"], 1)
-            self.assertEqual(item["stops"], 0)
-            self.assertIn('"cabin": "Y"', item["fare_card_json"])
-        self.assertEqual(summary["itinerary_count"], 3)
-        self.assertEqual(summary["direct_itinerary_count"], 2)
-        self.assertEqual(summary["connecting_itinerary_count"], 1)
-        self.assertEqual(summary["all_economy_min_fare_cny"], "750.00")
-        self.assertEqual(summary["direct_economy_min_fare_cny"], "1050.00")
-        self.assertEqual(summary["transfer_summary"]["economy_fare_card_count_by_stops"], {"0": 2, "1": 1})
-        serialized_summary = json.dumps(summary, ensure_ascii=False)
-        self.assertNotIn("flightList", serialized_summary)
-        self.assertNotIn("fareBasis", serialized_summary)
+class VisibleSourcePolicyTests(unittest.TestCase):
+    def test_daily_collector_uses_visible_cards_and_has_no_response_parser(self):
+        source = (ROOT / "daily_price_collector.py").read_text(encoding="utf-8")
+        for forbidden in (
+            "BrowserNetworkCaptureDriver",
+            "Network.getResponseBody",
+            "parse_response_payload",
+            "_parse_response_body",
+            "flightItineraryList",
+            "BATCH_SEARCH_PATH",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("_visible_result_card_texts", source)
+        self.assertIn("parse_visible_flight_cards", source)
 
-    def test_route_or_date_mismatch_is_rejected(self):
-        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        with self.assertRaisesRegex(CollectionError, "did not match request"):
-            parse_response_payload(payload, Query("上海", "广州", "2026-09-30"), CAPTURED_AT)
 
-    def test_captured_ui_search_request_must_match_route_and_date(self):
-        request_body = json.dumps({"flightSegments": [{
-            "departureCityName": "上海",
-            "arrivalCityName": "北京",
-            "departureDate": "2026-09-30",
-            "departureAirportCode": "SHA",
-            "arrivalAirportCode": "PEK",
-        }]}).encode("utf-8")
-        _validate_request_body(request_body, SAMPLE_QUERY)
-        wrong_airport_body = json.dumps({"flightSegments": [{
-            "departureCityName": "上海",
-            "arrivalCityName": "北京",
-            "departureDate": "2026-09-30",
-            "departureAirportCode": "SHA",
-            "arrivalAirportCode": "CTU",
-        }]}).encode("utf-8")
-        with self.assertRaisesRegex(CollectionError, "exact airport codes"):
-            _validate_request_body(wrong_airport_body, SAMPLE_QUERY)
-        with self.assertRaisesRegex(CollectionError, "did not match scope"):
-            _validate_request_body(
-                request_body, Query("上海", "深圳", "2026-09-30")
-            )
+class AccessBlockDetectionTests(unittest.TestCase):
+    class Driver:
+        def __init__(self, text):
+            self.title = "Ctrip flights"
+            self.body = type("Body", (), {"text": text})()
 
-    def test_login_required_response_is_blocked(self):
-        payload = {
-            "flightSegments": [{"departureCityName": "上海", "arrivalCityName": "北京", "departureDate": "2026-09-30"}],
-            "data": {"needUserLogin": True, "flightItineraryList": []},
-        }
-        from daily_price_collector import AccessBlocked
-        with self.assertRaises(AccessBlocked):
-            parse_response_payload(payload, SAMPLE_QUERY, CAPTURED_AT)
+        def find_elements(self, by, selector):
+            return []
+
+        def find_element(self, by, selector):
+            return self.body
+
+    def test_stops_on_explicit_login_challenge_or_rate_limit(self):
+        self.assertIsNone(_page_block_reason(self.Driver("航班搜索 登录/注册")))
+        for message in (
+            "请先登录后继续",
+            "请输入验证码",
+            "安全验证",
+            "429 Too Many Requests",
+            "Access denied",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNotNone(_page_block_reason(self.Driver(message)))
 
 
 class SQLiteHistoryTests(unittest.TestCase):
@@ -504,7 +477,7 @@ class SQLiteHistoryTests(unittest.TestCase):
                 count = store.connection.execute(
                     "SELECT COUNT(*) FROM flight_observations WHERE flight_no='MU5101'"
                 ).fetchone()[0]
-                self.assertEqual(count, 4)
+                self.assertEqual(count, 2)
                 saved = store.connection.execute(
                     "SELECT captured_at, currency, direct, economy, stops FROM flight_observations ORDER BY observation_id LIMIT 1"
                 ).fetchone()

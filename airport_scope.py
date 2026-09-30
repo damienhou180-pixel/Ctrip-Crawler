@@ -67,8 +67,8 @@ SHANGHAI_EXCLUDED_GENERAL_AVIATION_AIRPORTS = (
     Airport("上海", "金山水上通用机场", "JS2", AirportServiceClass.GENERAL_AVIATION),
 )
 
-# Seven directory-derived scheduled-passenger candidates are recorded below.
-# They are not a claim that any city's runtime autocomplete is exhaustive.
+# Seven scheduled-passenger airports are recorded below, backed by the complete
+# anonymous autocomplete evidence summarized per city; GA and port entries remain excluded.
 DESTINATION_AIRPORTS: dict[str, AirportInventory] = {
     "北京": AirportInventory(
         "北京",
@@ -76,9 +76,9 @@ DESTINATION_AIRPORTS: dict[str, AirportInventory] = {
             Airport("北京", "首都国际机场", "PEK", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),
             Airport("北京", "大兴国际机场", "PKX", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),
         ),
-        False,
-        CTRIP_AIRPORT_DIRECTORY_URL,
-        "PEK and PKX are scheduled-passenger scope candidates from the Ctrip directory. The earlier visible autocomplete also showed general-aviation MY2, which is excluded; the complete current selector list remains unverified.",
+        True,
+        "https://flights.ctrip.com/online/channel/domestic",
+        "Complete anonymous autocomplete verified 2026-09-30: city option, PEK, PKX, and general-aviation MY2. PEK and PKX were each uniquely selected and their codes verified in the visible field; MY2 is explicitly excluded.",
         (
             Airport("北京", "密云穆家峪通用机场", "MY2", AirportServiceClass.GENERAL_AVIATION),
         ),
@@ -86,16 +86,16 @@ DESTINATION_AIRPORTS: dict[str, AirportInventory] = {
     "广州": AirportInventory(
         "广州",
         (Airport("广州", "白云国际机场", "CAN", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),),
-        False,
-        CTRIP_AIRPORT_DIRECTORY_URL,
-        "CAN is a scheduled-passenger scope candidate from the directory. ZTI, NSZ, and PFT are passenger-port entries and are excluded; current autocomplete completeness is unverified.",
+        True,
+        "https://flights.ctrip.com/online/channel/domestic",
+        "Complete anonymous autocomplete verified 2026-09-30: city option and CAN; CAN was uniquely selected and its code verified in the visible field. ZTI, NSZ, and PFT are passenger-port entries and excluded from the airport scope.",
     ),
     "深圳": AirportInventory(
         "深圳",
         (Airport("深圳", "宝安国际机场", "SZX", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),),
-        False,
-        CTRIP_AIRPORT_DIRECTORY_URL,
-        "SZX is a scheduled-passenger scope candidate from the directory. ZYK is a cruise port and is excluded; current autocomplete completeness is unverified.",
+        True,
+        "https://flights.ctrip.com/online/channel/domestic",
+        "Complete anonymous autocomplete verified 2026-09-30: city option and SZX; SZX was uniquely selected and its code verified in the visible field. ZYK is a cruise port and excluded from the airport scope.",
     ),
     "成都": AirportInventory(
         "成都",
@@ -103,16 +103,16 @@ DESTINATION_AIRPORTS: dict[str, AirportInventory] = {
             Airport("成都", "天府国际机场", "TFU", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),
             Airport("成都", "双流国际机场", "CTU", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),
         ),
-        False,
-        CTRIP_AIRPORT_DIRECTORY_URL,
-        "TFU and CTU are scheduled-passenger scope candidates from the directory; current autocomplete completeness is unverified.",
+        True,
+        "https://flights.ctrip.com/online/channel/domestic",
+        "Complete anonymous autocomplete verified 2026-09-30: TFU appears for 成都; CTU appears when searching 双流. Both airport options were uniquely selected and their codes verified in the visible field.",
     ),
     "乌鲁木齐": AirportInventory(
         "乌鲁木齐",
         (Airport("乌鲁木齐", "天山国际机场", "URC", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER),),
-        False,
-        "https://flights.ctrip.com/booking/airport-urc",
-        "The Ctrip URC page supports the airport identity only; the complete current autocomplete list is unverified.",
+        True,
+        "https://flights.ctrip.com/online/channel/domestic",
+        "Complete anonymous autocomplete verified 2026-09-30: city option and URC; URC was uniquely selected and its code verified in the visible field.",
     ),
 }
 
