@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from airport_scope import (
     Airport,
     AirportCoverageUnverified,
+    AirportServiceClass,
     DESTINATION_AIRPORTS,
     build_airport_route_pairs,
     build_matrix_plan,
@@ -809,13 +810,23 @@ def collect_one_query(driver: BrowserNetworkCaptureDriver, query: Query) -> tupl
     choose_airport(
         driver,
         city_inputs[0],
-        Airport(query.departure_city, query.departure_airport_name, query.departure_airport_code),
+        Airport(
+            query.departure_city,
+            query.departure_airport_name,
+            query.departure_airport_code,
+            AirportServiceClass.SCHEDULED_CIVIL_PASSENGER,
+        ),
     )
     _assert_not_blocked(driver)
     choose_airport(
         driver,
         city_inputs[1],
-        Airport(query.arrival_city, query.arrival_airport_name, query.arrival_airport_code),
+        Airport(
+            query.arrival_city,
+            query.arrival_airport_name,
+            query.arrival_airport_code,
+            AirportServiceClass.SCHEDULED_CIVIL_PASSENGER,
+        ),
     )
     _assert_not_blocked(driver)
     choose_departure_date(driver, query.departure_date)

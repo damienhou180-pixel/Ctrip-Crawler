@@ -3,36 +3,41 @@
   "source_section": "国内机场",
   "observed_on": "2026-09-30",
   "source_url": "https://flights.ctrip.com/booking/airport-guides.html",
+  "scope_rule": "Count only airports classified for scheduled civil passenger flights. Exclude general-aviation airports and non-airport transport nodes.",
   "airport_entries_by_city": {
     "北京": [
-      {"name": "首都国际机场", "code": "PEK", "url": "https://flights.ctrip.com/booking/airport-pek"},
-      {"name": "大兴国际机场", "code": "PKX", "url": "https://flights.ctrip.com/booking/airport-pkx"}
+      {"name": "首都国际机场", "code": "PEK", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-pek"},
+      {"name": "大兴国际机场", "code": "PKX", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-pkx"}
     ],
     "广州": [
-      {"name": "白云国际机场", "code": "CAN", "url": "https://flights.ctrip.com/booking/airport-can"}
+      {"name": "白云国际机场", "code": "CAN", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-can"}
     ],
     "深圳": [
-      {"name": "宝安国际机场", "code": "SZX", "url": "https://flights.ctrip.com/booking/airport-szx"}
+      {"name": "宝安国际机场", "code": "SZX", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-szx"}
     ],
     "成都": [
-      {"name": "天府国际机场", "code": "TFU", "url": "https://flights.ctrip.com/booking/airport-tfu"},
-      {"name": "双流国际机场", "code": "CTU", "url": "https://flights.ctrip.com/booking/airport-ctu"}
+      {"name": "天府国际机场", "code": "TFU", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-tfu"},
+      {"name": "双流国际机场", "code": "CTU", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-ctu"}
     ],
     "乌鲁木齐": [
-      {"name": "天山国际机场", "code": "URC", "url": "https://flights.ctrip.com/booking/airport-urc", "evidence_note": "Separately verified Ctrip airport page; not a complete autocomplete listing."}
+      {"name": "天山国际机场", "code": "URC", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-urc", "evidence_note": "Separately verified Ctrip airport page; not a complete autocomplete listing."}
     ],
     "上海": [
-      {"name": "虹桥国际机场", "code": "SHA", "url": "https://flights.ctrip.com/booking/airport-sha"},
-      {"name": "浦东国际机场", "code": "PVG", "url": "https://flights.ctrip.com/booking/airport-pvg"}
+      {"name": "虹桥国际机场", "code": "SHA", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-sha"},
+      {"name": "浦东国际机场", "code": "PVG", "service_class": "scheduled_civil_passenger", "url": "https://flights.ctrip.com/booking/airport-pvg"}
     ]
   },
+  "excluded_general_aviation_autocomplete_options": [
+    {"city": "北京", "name": "密云穆家峪通用机场", "code": "MY2", "service_class": "general_aviation", "evidence_note": "Observed in an earlier visible flight-search autocomplete on 2026-09-30; not a scheduled civil passenger airport."},
+    {"city": "上海", "name": "金山水上通用机场", "code": "JS2", "service_class": "general_aviation", "evidence_note": "Shown in a previous Shanghai autocomplete excerpt; explicitly outside the selected PVG/SHA origin scope."}
+  ],
   "excluded_non_airport_directory_entries": [
     {"city": "广州", "name": "东莞虎门港澳码头", "code": "ZTI", "kind": "passenger ferry terminal", "url": "https://flights.ctrip.com/booking/airport-zti"},
     {"city": "广州", "name": "广州南沙港客运码头", "code": "NSZ", "kind": "passenger port terminal", "url": "https://flights.ctrip.com/booking/airport-nsz"},
     {"city": "广州", "name": "琶洲港澳客运口岸码头", "code": "PFT", "kind": "passenger port terminal", "url": "https://flights.ctrip.com/booking/airport-pft"},
     {"city": "深圳", "name": "蛇口邮轮母港", "code": "ZYK", "kind": "cruise port", "url": "https://flights.ctrip.com/booking/airport-zyk"}
   ],
-  "autocomplete_completeness": "The airport-directory page does not state that its entries exactly match or exhaust the domestic flight-search autocomplete. Runtime collection must verify a unique visible airport option and code; until each destination city is complete, scope generation remains fail-closed.",
+  "autocomplete_completeness": "The Ctrip directory does not state that its entries exhaust the domestic flight-search autocomplete. A separate current runtime-page verification must enumerate and classify all visible airport options in every requested city. The 2026-09-30 cross-check captured no candidates because the page was stale and DOM output was limited; no city is verified complete and scope generation remains fail-closed.",
   "origin_scope": ["PVG", "SHA"],
-  "dropdown_only_origin_entry_excluded_by_user_scope": {"name": "金山水上通用机场", "code": "JS2"}
+  "dropdown_only_origin_entry_excluded_by_user_scope": {"name": "金山水上通用机场", "code": "JS2", "service_class": "general_aviation"}
 }

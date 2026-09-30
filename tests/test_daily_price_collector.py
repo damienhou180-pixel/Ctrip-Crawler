@@ -3,6 +3,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -27,9 +28,11 @@ from airport_scope import (
     Airport,
     AirportCoverageUnverified,
     AirportInventory,
+    AirportServiceClass,
     CITY_HUBS,
     DESTINATION_AIRPORTS,
     SHANGHAI_AIRPORTS,
+    SHANGHAI_EXCLUDED_GENERAL_AVIATION_AIRPORTS,
     build_airport_route_pairs,
     build_matrix_plan,
     coverage_report,
@@ -54,7 +57,12 @@ def synthetic_complete_inventory():
         city: AirportInventory(
             city,
             tuple(
-                Airport(city, f"{city}测试机场{index}", f"{prefixes[city]}{index:02d}")
+                Airport(
+                    city,
+                    f"{city}测试机场{index}",
+                    f"{prefixes[city]}{index:02d}",
+                    AirportServiceClass.SCHEDULED_CIVIL_PASSENGER,
+                )
                 for index in range(1, counts[city] + 1)
             ),
             True,
@@ -122,10 +130,28 @@ class DailyScopeTests(unittest.TestCase):
             if city in CITY_HUBS
         }
         configured_codes = {
-            city: [airport.code for airport in DESTINATION_AIRPORTS[city].airports]
+            city: [
+                airport.code
+                for airport in DESTINATION_AIRPORTS[city].scheduled_passenger_airports
+            ]
             for city in CITY_HUBS
         }
         self.assertEqual(configured_codes, expected_codes)
+        self.assertEqual(
+            {
+                entry["service_class"]
+                for city in CITY_HUBS
+                for entry in snapshot["airport_entries_by_city"][city]
+            },
+            {AirportServiceClass.SCHEDULED_CIVIL_PASSENGER.value},
+        )
+        self.assertTrue(
+            all(
+                airport.service_class is AirportServiceClass.SCHEDULED_CIVIL_PASSENGER
+                for city in CITY_HUBS
+                for airport in DESTINATION_AIRPORTS[city].scheduled_passenger_airports
+            )
+        )
 
         excluded_codes = {
             entry["code"] for entry in snapshot["excluded_non_airport_directory_entries"]
@@ -135,7 +161,7 @@ class DailyScopeTests(unittest.TestCase):
         report = coverage_report()
         directory_plan = report["directory_matrix"]
         self.assertEqual(
-            directory_plan["directory_entry_counts_by_city"],
+            directory_plan["directory_scheduled_passenger_candidate_counts_by_city"],
             {"北京": 2, "广州": 1, "深圳": 1, "成都": 2, "乌鲁木齐": 1},
         )
         self.assertEqual(directory_plan["S_directory"], 7)
@@ -148,6 +174,59 @@ class DailyScopeTests(unittest.TestCase):
         for city in CITY_HUBS:
             self.assertFalse(report["airport_counts_by_city"][city]["selector_complete"])
             self.assertIsNone(report["airport_counts_by_city"][city]["n_i"])
+
+    def test_general_aviation_options_are_excluded_from_scheduled_passenger_scope(self):
+        snapshot = json.loads(DIRECTORY_FIXTURE.read_text(encoding="utf-8"))
+        fixture_exclusions = {
+            (item["city"], item["code"], item["service_class"])
+            for item in snapshot["excluded_general_aviation_autocomplete_options"]
+        }
+        configured_exclusions = {
+            (city, airport.code, airport.service_class.value)
+            for city in CITY_HUBS
+            for airport in DESTINATION_AIRPORTS[city].excluded_general_aviation_airports
+        }
+        configured_exclusions.update(
+            (airport.city, airport.code, airport.service_class.value)
+            for airport in SHANGHAI_EXCLUDED_GENERAL_AVIATION_AIRPORTS
+        )
+        self.assertEqual(fixture_exclusions, configured_exclusions)
+        self.assertEqual({code for _, code, _ in fixture_exclusions}, {"MY2", "JS2"})
+        self.assertNotIn("JS2", {airport.code for airport in SHANGHAI_AIRPORTS})
+        self.assertNotIn(
+            "MY2",
+            {
+                airport.code
+                for item in DESTINATION_AIRPORTS.values()
+                for airport in item.scheduled_passenger_airports
+            },
+        )
+
+        report = coverage_report()
+        self.assertEqual(
+            report["airport_counts_by_city"]["北京"]["excluded_general_aviation_airports"],
+            [{"name": "密云穆家峪通用机场", "code": "MY2"}],
+        )
+        self.assertEqual(report["airport_counts_by_city"]["北京"]["n_i"], None)
+
+        # Even a mistakenly complete inventory cannot smuggle a GA airport into
+        # the matrix's eligible scheduled-passenger list.
+        bad_inventory = synthetic_complete_inventory()
+        bad_item = bad_inventory["北京"]
+        bad_inventory["北京"] = replace(
+            bad_item,
+            scheduled_passenger_airports=bad_item.scheduled_passenger_airports
+            + (
+                Airport(
+                    "北京",
+                    "测试通用机场",
+                    "MY2",
+                    AirportServiceClass.GENERAL_AVIATION,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "scheduled_civil_passenger"):
+            build_matrix_plan(bad_inventory)
 
     def test_current_cities_without_complete_evidence_are_reported_and_fail_closed(self):
         report = coverage_report()
@@ -184,7 +263,9 @@ class DailyScopeTests(unittest.TestCase):
         self.assertFalse(_selected_city_value("上海(SHA)", "北京"))
 
     def test_airport_selection_requires_exact_visible_name_code_and_verified_value(self):
-        airport = Airport("上海", "虹桥国际机场", "SHA")
+        airport = Airport(
+            "上海", "虹桥国际机场", "SHA", AirportServiceClass.SCHEDULED_CIVIL_PASSENGER
+        )
         self.assertEqual(
             _airport_identity("点击POI选项[city:,Province:上海,Name:虹桥国际机场,Code:SHA]"),
             ("虹桥国际机场", "SHA"),
