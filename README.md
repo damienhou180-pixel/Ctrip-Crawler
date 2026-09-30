@@ -2,7 +2,7 @@
 
 ## Daily price history collector
 
-新的每日安全采集入口、SQLite schema、CSV 导出、运行方式和限制见 [DAILY_PRICE_HISTORY.md](DAILY_PRICE_HISTORY.md)。默认入口是 `python3 daily_price_collector.py run`，覆盖上海与北京、广州、深圳、成都、乌鲁木齐双向 10 条城市航线及 GMT+8 当日起未来 30 天，共 300 个搜索；仅保留直飞经济舱并追加到 SQLite。
+新的每日安全采集入口、SQLite schema、CSV 导出、运行方式和限制见 [DAILY_PRICE_HISTORY.md](DAILY_PRICE_HISTORY.md)。机场级矩阵按上海 PVG/SHA 与五个目的城市各机场双向配对：若五城机场数为 `n_i`、总和为 `S`，30 天每日运行上限为 `30 × 4 × S = 120S`；本次证据只完整确认成都 2 个机场，其余四城未核实，程序会在触碰浏览器或数据库前 fail closed，不启动票价采集。历史仍按每次观测追加到 SQLite。
 
 > **安全说明：** 新入口使用普通 Chromium、默认 TLS 校验、无账号/用户 Cookie、无代理或反自动化参数、单线程且至少 5 秒节流；登录、验证码、访问拒绝、未知 DOM 或响应不匹配会停止当前 run 并保留部分覆盖状态。此文档没有安装或启动每日 schedule。
 

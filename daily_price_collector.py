@@ -21,6 +21,14 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from airport_scope import (
+    Airport,
+    AirportCoverageUnverified,
+    DESTINATION_AIRPORTS,
+    build_airport_route_pairs,
+    build_matrix_plan,
+    coverage_report,
+)
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
@@ -44,12 +52,6 @@ SOURCE = "Ctrip public domestic-flight UI via Chromium Network events"
 BATCH_SEARCH_PATH = "/international/search/api/search/batchSearch"
 DEFAULT_DATABASE = Path(__file__).resolve().parent / "data" / "ctrip_price_history.sqlite3"
 TIME_ZONE = ZoneInfo("Asia/Shanghai")
-CITY_HUBS = ("北京", "广州", "深圳", "成都", "乌鲁木齐")
-ROUTE_PAIRS = tuple(
-    route
-    for hub in CITY_HUBS
-    for route in (("上海", hub), (hub, "上海"))
-)
 CITY_ACCESSIBLE_NAME = "可输入城市或机场"
 DATE_ACCESSIBLE_NAME = "请选择日期"
 CALENDAR_TITLE_SELECTOR = ".date-title"
@@ -76,8 +78,12 @@ class Query:
     departure_city: str
     arrival_city: str
     departure_date: str
+    departure_airport_code: str | None = None
+    departure_airport_name: str | None = None
+    arrival_airport_code: str | None = None
+    arrival_airport_name: str | None = None
 
-    def as_scope_row(self) -> dict[str, str]:
+    def as_scope_row(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -87,9 +93,30 @@ def build_date_window(run_date: date | None = None) -> list[str]:
     return [(start + timedelta(days=offset)).isoformat() for offset in range(30)]
 
 
-def build_scope(run_date: date | None = None) -> list[Query]:
+def build_scope(
+    run_date: date | None = None,
+    inventory: dict[str, Any] = DESTINATION_AIRPORTS,
+) -> list[Query]:
+    """Build all 30-day airport-pair queries or refuse an incomplete inventory."""
+    plan = build_matrix_plan(inventory)
+    routes = build_airport_route_pairs(inventory)
     dates = build_date_window(run_date)
-    return [Query(origin, destination, day) for origin, destination in ROUTE_PAIRS for day in dates]
+    scope = [
+        Query(
+            origin.city,
+            destination.city,
+            day,
+            origin.code,
+            origin.name,
+            destination.code,
+            destination.name,
+        )
+        for origin, destination in routes
+        for day in dates
+    ]
+    if len(scope) != plan["expected_queries"]:
+        raise AssertionError("Airport query scope does not match the shared matrix formula.")
+    return scope
 
 
 def _selected_city_value(value: str | None, city: str) -> bool:
@@ -140,6 +167,95 @@ def _visible_city_suggestions(driver: Any, city: str) -> list[str]:
         except WebDriverException:
             continue
     return suggestions
+
+
+_AIRPORT_IDENTITY_PATTERN = re.compile(r"Name:([^,\]]+),Code:([A-Z0-9]{3})(?:[,\]]|$)")
+
+
+def _airport_identity(remark: str | None) -> tuple[str, str] | None:
+    match = _AIRPORT_IDENTITY_PATTERN.search(remark or "")
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _selected_airport_value(value: str | None, airport: Airport) -> bool:
+    return bool(
+        value
+        and value.startswith(airport.city + "(")
+        and value.endswith(f"({airport.code})")
+    )
+
+
+def _candidate_airport_options(driver: Any, airport: Airport) -> list[Any]:
+    """Find exact visible Ctrip POIs by their displayed name and observed code."""
+    candidates = []
+    for element in driver.find_elements(By.CSS_SELECTOR, "li[data-u_key='poi_select_item']"):
+        try:
+            if not element.is_displayed() or not element.is_enabled():
+                continue
+            text = (element.accessible_name or element.text or "").strip()
+            identity = _airport_identity(element.get_attribute("data-u_remark"))
+            if (
+                identity == (airport.name, airport.code)
+                and airport.city in text
+            ):
+                candidates.append(element)
+        except WebDriverException:
+            continue
+    return candidates
+
+
+def choose_airport(
+    driver: Any,
+    input_element: Any,
+    airport: Airport,
+    timeout: float = 4.0,
+) -> str:
+    """Select one exact visible airport POI and verify the selected IATA/code suffix."""
+    input_element.click()
+    input_element.send_keys(Keys.CONTROL + "a")
+    input_element.send_keys(airport.city)
+
+    def selected_or_option(_driver: Any) -> Any:
+        value = input_element.get_attribute("value")
+        if _selected_airport_value(value, airport):
+            return ("selected", value)
+        options = _candidate_airport_options(_driver, airport)
+        if options:
+            return ("options", options)
+        return False
+
+    try:
+        outcome = WebDriverWait(driver, timeout, poll_frequency=0.2).until(selected_or_option)
+    except TimeoutException as exc:
+        raise CtripSelectorMismatch(
+            f"The visible {airport.city} airport option {airport.name} ({airport.code}) "
+            "was not uniquely verifiable; the query was not submitted."
+        ) from exc
+
+    if outcome[0] == "options":
+        if len(outcome[1]) != 1:
+            raise CtripSelectorMismatch(
+                f"Airport {airport.city}/{airport.code} produced {len(outcome[1])} exact visible options; "
+                "the query was not submitted."
+            )
+        outcome[1][0].click()
+        try:
+            WebDriverWait(driver, timeout, poll_frequency=0.2).until(
+                lambda _d: _selected_airport_value(
+                    input_element.get_attribute("value"), airport
+                )
+            )
+        except TimeoutException as exc:
+            raise CtripSelectorMismatch(
+                f"Selecting {airport.name} ({airport.code}) did not verify in the city textbox."
+            ) from exc
+
+    selected_value = input_element.get_attribute("value")
+    if not _selected_airport_value(selected_value, airport):
+        raise CtripSelectorMismatch(
+            f"Airport selection verification failed for {airport.city}/{airport.code}."
+        )
+    return selected_value
 
 
 def choose_city(driver: Any, input_element: Any, city: str, timeout: float = 4.0) -> str:
@@ -498,6 +614,20 @@ def _validate_request_body(request_body: bytes, query: Query) -> None:
         raise CollectionError(
             f"Submitted request route/date did not match scope (expected={expected!r}, observed={observed!r})."
         )
+    if query.departure_airport_code or query.arrival_airport_code:
+        airport_codes = (
+            segment.get("departureAirportCode"),
+            segment.get("arrivalAirportCode"),
+        )
+        expected_codes = (
+            query.departure_airport_code,
+            query.arrival_airport_code,
+        )
+        if None in expected_codes or airport_codes != expected_codes:
+            raise CollectionError(
+                "Submitted request omitted or mismatched the exact airport codes "
+                f"(expected={expected_codes!r}, observed={airport_codes!r})."
+            )
 
 
 def parse_response_payload(
@@ -559,6 +689,20 @@ def parse_response_payload(
         is_direct = stops == 0 and len(flights) == 1 and not stop_list
         if is_direct:
             direct_count += 1
+            if query.departure_airport_code or query.arrival_airport_code:
+                observed_airports = (
+                    flight.get("departureAirportCode"),
+                    flight.get("arrivalAirportCode"),
+                )
+                expected_airports = (
+                    query.departure_airport_code,
+                    query.arrival_airport_code,
+                )
+                if None in expected_airports or observed_airports != expected_airports:
+                    raise CollectionError(
+                        "Direct itinerary airport codes did not match the selected airport pair "
+                        f"(expected={expected_airports!r}, observed={observed_airports!r})."
+                    )
 
         price_list = itinerary.get("priceList") or []
         if not isinstance(price_list, list):
@@ -646,6 +790,8 @@ def _parse_response_body(body: bytes) -> dict[str, Any]:
 
 def collect_one_query(driver: BrowserNetworkCaptureDriver, query: Query) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
     """Submit exactly one visible UI query and return its captured API response."""
+    if not all((query.departure_airport_code, query.departure_airport_name, query.arrival_airport_code, query.arrival_airport_name)):
+        raise CollectionError("Airport-level scope is required; city-only queries are not allowed.")
     driver.get(HOME_URL)
     try:
         WebDriverWait(driver, 18, poll_frequency=0.25).until(
@@ -660,9 +806,17 @@ def collect_one_query(driver: BrowserNetworkCaptureDriver, query: Query) -> tupl
     city_inputs = wait_for_city_inputs(driver, timeout=8)
     if len(city_inputs) != 2:
         raise CtripSelectorMismatch(f"Expected two verified city textboxes, found {len(city_inputs)}.")
-    choose_city(driver, city_inputs[0], query.departure_city)
+    choose_airport(
+        driver,
+        city_inputs[0],
+        Airport(query.departure_city, query.departure_airport_name, query.departure_airport_code),
+    )
     _assert_not_blocked(driver)
-    choose_city(driver, city_inputs[1], query.arrival_city)
+    choose_airport(
+        driver,
+        city_inputs[1],
+        Airport(query.arrival_city, query.arrival_airport_name, query.arrival_airport_code),
+    )
     _assert_not_blocked(driver)
     choose_departure_date(driver, query.departure_date)
     _ensure_one_way(driver)
@@ -705,10 +859,12 @@ def run_collection(
     max_queries: int | None = None,
     delay_seconds: float = MINIMUM_QUERY_DELAY_SECONDS,
     driver_factory: Any = create_driver,
+    inventory: dict[str, Any] = DESTINATION_AIRPORTS,
 ) -> dict[str, Any]:
     if delay_seconds < MINIMUM_QUERY_DELAY_SECONDS:
         raise ValueError(f"delay_seconds must be at least {MINIMUM_QUERY_DELAY_SECONDS:g} seconds.")
-    scope = build_scope(run_date)
+    plan = build_matrix_plan(inventory)
+    scope = build_scope(run_date, inventory)
     run_id = str(uuid.uuid4())
     store = PriceHistoryStore(database_path)
     store.create_run(run_id, [query.as_scope_row() for query in scope])
@@ -720,7 +876,14 @@ def run_collection(
     try:
         driver = driver_factory()
         for index, query in enumerate(scope[:limit]):
-            store.mark_query_running(run_id, query.departure_city, query.arrival_city, query.departure_date)
+            store.mark_query_running(
+                run_id,
+                query.departure_city,
+                query.arrival_city,
+                query.departure_date,
+                query.departure_airport_code,
+                query.arrival_airport_code,
+            )
             attempted_count += 1
             try:
                 observations, summary, query_status = collect_one_query(driver, query)
@@ -729,6 +892,8 @@ def run_collection(
                     departure_city=query.departure_city,
                     arrival_city=query.arrival_city,
                     departure_date=query.departure_date,
+                    departure_airport_code=query.departure_airport_code,
+                    arrival_airport_code=query.arrival_airport_code,
                     status=query_status,
                     captured_at=gmt8_now(),
                     source=SOURCE,
@@ -742,6 +907,8 @@ def run_collection(
                     departure_city=query.departure_city,
                     arrival_city=query.arrival_city,
                     departure_date=query.departure_date,
+                    departure_airport_code=query.departure_airport_code,
+                    arrival_airport_code=query.arrival_airport_code,
                     status="blocked",
                     captured_at=gmt8_now(),
                     source=SOURCE,
@@ -755,6 +922,8 @@ def run_collection(
                     departure_city=query.departure_city,
                     arrival_city=query.arrival_city,
                     departure_date=query.departure_date,
+                    departure_airport_code=query.departure_airport_code,
+                    arrival_airport_code=query.arrival_airport_code,
                     status="error",
                     captured_at=gmt8_now(),
                     source=SOURCE,
@@ -774,8 +943,11 @@ def run_collection(
         result = store.finish_run(run_id, stop_reason)
         store.close()
 
-    result["scope_routes"] = len(ROUTE_PAIRS)
-    result["scope_dates"] = 30
+    result["scope_routes"] = plan["directed_routes_per_departure_date"]
+    result["scope_airport_counts_by_city"] = plan["airport_counts_by_city"]
+    result["scope_airport_sum"] = plan["S"]
+    result["scope_dates"] = plan["departure_dates"]
+    result["scope_formula"] = plan["formula"]
     result["scope_total"] = len(scope)
     result["stop_reason"] = stop_reason
     result["validation_limit"] = max_queries
@@ -790,14 +962,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Anonymous, append-only Ctrip price history collector")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    run = commands.add_parser("run", help="Run the full Shanghai/hub, 30-date daily scope")
+    run = commands.add_parser("run", help="Run the complete verified airport-pair scope for 30 dates")
     _database_argument(run)
-    run.add_argument("--dry-run", action="store_true", help="Print the exact 300-query scope without opening a browser")
+    run.add_argument("--dry-run", action="store_true", help="Report the exact airport-pair matrix without opening a browser")
     run.add_argument(
         "--max-queries",
         type=int,
         default=None,
-        help="Validation only: attempt at most N queries; the run remains marked partial and is NOT the daily full-scope mode.",
+        help="Validation only: attempt at most N queries; incomplete airport scope is rejected before browser or database access.",
     )
     run.add_argument(
         "--delay-seconds",
@@ -830,32 +1002,57 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps({"kind": args.kind, "rows": count, "csv": str(Path(args.output).resolve())}, ensure_ascii=False))
         return 0
     if args.command == "run" and args.dry_run:
-        scope = build_scope()
-        print(
-            json.dumps(
-                {
-                    "mode": "dry-run; no database rows or browser queries created",
-                    "run_day_gmt8": datetime.now(TIME_ZONE).date().isoformat(),
-                    "routes": len(ROUTE_PAIRS),
-                    "departure_dates": 30,
-                    "queries": len(scope),
-                    "first_query": scope[0].as_scope_row(),
-                    "last_query": scope[-1].as_scope_row(),
-                    "query_delay_seconds_minimum": MINIMUM_QUERY_DELAY_SECONDS,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
-        return 0
+        report = coverage_report()
+        try:
+            plan = build_matrix_plan()
+            scope = build_scope()
+            result = {
+                "mode": "dry-run; no database rows or browser queries created",
+                "status": "scope_ready",
+                "run_day_gmt8": datetime.now(TIME_ZONE).date().isoformat(),
+                "matrix": plan,
+                "first_query": scope[0].as_scope_row(),
+                "last_query": scope[-1].as_scope_row(),
+                "query_delay_seconds_minimum": MINIMUM_QUERY_DELAY_SECONDS,
+            }
+            exit_code = 0
+        except AirportCoverageUnverified as exc:
+            result = {
+                "mode": "dry-run; no database rows or browser queries created",
+                "status": "scope_unverified",
+                "run_day_gmt8": datetime.now(TIME_ZONE).date().isoformat(),
+                "matrix": report,
+                "stop_reason": str(exc),
+                "query_delay_seconds_minimum": MINIMUM_QUERY_DELAY_SECONDS,
+            }
+            exit_code = 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return exit_code
     if args.command == "run":
+        try:
+            build_matrix_plan()
+        except AirportCoverageUnverified as exc:
+            print(
+                json.dumps(
+                    {
+                        "status": "scope_unverified",
+                        "matrix": coverage_report(),
+                        "stop_reason": str(exc),
+                        "database_touched": False,
+                        "browser_opened": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
         if args.max_queries is not None and args.max_queries <= 0:
             parser.error("--max-queries must be positive when specified")
         if args.delay_seconds < MINIMUM_QUERY_DELAY_SECONDS:
             parser.error("--delay-seconds must be at least 5")
         if args.max_queries is not None:
             print(
-                "Validation-only run requested: the stored scope remains 300 queries; "
+                "Validation-only run requested: the stored scope remains the full airport-pair matrix; "
                 "unattempted rows will be marked not_run and the run will be partial.",
                 file=sys.stderr,
             )

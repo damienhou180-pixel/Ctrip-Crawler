@@ -1,34 +1,42 @@
 # Daily Flight Price History Collector
 
-This guide covers the dedicated daily entry point. It does **not** use the legacy login/cookie/proxy/automatic-retry flow.
+This guide describes the anonymous, append-only airport-pair collector. It does not use the legacy login, account, Cookie, proxy, retry, or challenge-handling flows.
 
-## Scope and behavior
+## Requested airport scope and current evidence
 
-A normal `run` uses the GMT+8 calendar date when the run starts and builds the complete scope:
+The requested Shanghai endpoints are **PVG (浦东国际机场)** and **SHA (虹桥国际机场)** only. The Ctrip Shanghai dropdown excerpt also contained **JS2 (金山水上通用机场)**; JS2 is deliberately excluded because the requested origin scope is PVG + SHA.
 
-- **30 natural departure dates**, including today through today + 29 days.
-- **10 directed city routes**: Shanghai to/from Beijing, Guangzhou, Shenzhen, Chengdu, and Urumqi.
-- **300 route/date searches** in total.
-- Results retained are **nonstop economy (cabin Y)** only.
-- One browser process, one query at a time, with a minimum **5-second post-query delay**. The actual full run will take at least 25 minutes plus page, selection, and response time.
+Ctrip's public airport directory supports these destination entries, but the evidence does not establish a complete airport-selector inventory for four cities. Only Chengdu is treated as complete, based on the two entries in Ctrip's [domestic airport directory](https://flights.ctrip.com/booking/airport-guides.html). Airport pages and a directory are public information sources, not proof that a flight-search dropdown exposes no additional options.
 
-The normal entry point never limits or silently narrows this scope:
+| Destination | Ctrip-listed airport entries | Complete `n_i`? | Evidence status |
+| --- | --- | ---: | --- |
+| 北京 | 首都国际机场 **PEK**, 大兴国际机场 **PKX** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html)) | Unknown | Two entries are supported, but not proven to be every selector choice. |
+| 广州 | 白云国际机场 **CAN** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html), [airport page](https://flights.ctrip.com/booking/airport-baiyun/)) | Unknown | CAN is supported; completeness of the city selector is not established. |
+| 深圳 | 宝安国际机场 **SZX** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html), [airport page](https://flights.ctrip.com/booking/airport-szx/jichangjianjie.html)) | Unknown | SZX is supported; completeness of the city selector is not established. |
+| 成都 | 天府国际机场 **TFU**, 双流国际机场 **CTU** ([Ctrip domestic airport directory](https://flights.ctrip.com/booking/airport-guides.html), [TFU page](https://flights.ctrip.com/booking/airport-tfu), [CTU page](https://flights.ctrip.com/booking/airport-ctu)) | **2** | Both Chengdu entries are listed in the Ctrip domestic-airport directory. The live search textbox itself was not accessible for a dropdown check in this run. |
+| 乌鲁木齐 | 天山国际机场 **URC** ([Ctrip airport page](https://flights.ctrip.com/booking/airport-urc)) | Unknown | URC is supported; the page does not enumerate every selector choice. |
 
-```bash
-python3 daily_price_collector.py run
+The full matrix is **not numerically computable yet**: four `n_i` values remain unknown. Partial directory counts must not be substituted for complete city counts.
+
+## Matrix and fail-closed behavior
+
+For each destination airport, pair both Shanghai origin airports in both directions: PVG → destination, SHA → destination, destination → PVG, and destination → SHA. Across 30 natural dates beginning on the GMT+8 run date, the expected query count is:
+
+```text
+S = sum(n_i for 北京、广州、深圳、成都、乌鲁木齐)
+per-date directed routes = 4 × S
+total expected queries = 30 × 4 × S = 120S
 ```
 
-Preview the scope without opening a browser, creating a run record, or querying Ctrip:
+This is not `2 × S`, and the former city-level `300` count is obsolete. `airport_scope.py` is the shared source for the formula; scope construction, SQLite `runs.expected_queries`, coverage rows, run counters, query-coverage CSV export, and tests use the same airport-pair scope. The tests use a clearly synthetic inventory only to verify arithmetic; its result is not a real Ctrip query count.
 
-```bash
-python3 daily_price_collector.py run --dry-run
-```
+Because Beijing, Guangzhou, Shenzhen, and Urumqi do not yet have evidence proving complete airport-option lists, both `run` and `run --dry-run` return `scope_unverified` before opening a browser, creating/updating a database, or submitting a flight search. The incomplete four-city lists are never silently narrowed or treated as complete. **No full batch collection is enabled in this state.**
 
-`--max-queries N` exists **only** for an explicitly controlled validation. It still records the approved 300-query scope; all unattempted entries are written as `not_run`, and the run cannot be reported as complete. Do not pass this option for the daily run.
+When all five inventories have complete evidence, a scope will cover 30 dates from today through today + 29 days, with only nonstop economy fares retained. Each submitted request and each direct itinerary must match the exact departure and arrival airport codes. The UI must expose one unique visible option whose displayed name and `data-u_remark` airport code match; otherwise the run stops before Search.
 
-## Install and initialize
+## Local prerequisites
 
-Use Python 3.10+ and a locally available Chromium/Chrome browser. Selenium Manager may obtain a matching driver if needed. TLS certificate validation remains at Chromium's default secure setting.
+Use Python 3.10+ and a locally available Chromium/Chrome browser. Selenium Manager may obtain a matching driver if needed; TLS verification remains at Chromium's default secure setting.
 
 ```bash
 python3 -m venv .venv
@@ -36,15 +44,13 @@ python3 -m venv .venv
 .venv/bin/python daily_price_collector.py init-db
 ```
 
-Default database:
+The default database path is `data/ctrip_price_history.sqlite3`. Initializing or opening an existing version-1 database applies only the additive version-2 schema migration; existing run, query, flight, and summary rows are retained.
 
-```text
-/workspace/Ctrip-Crawler/data/ctrip_price_history.sqlite3
-```
+## SQLite history and exports
 
-The SQLite schema uses `PRAGMA user_version = 1`. It retains runs, one query-coverage row per planned city/date, one row per collected direct economy fare card, and a separate date-level summary table. The full itinerary card and complete raw fare-card JSON are stored with each flight observation. The summary table stores overall/direct economy minima and transfer-count/minimum summaries only; connecting fares never enter `flight_observations`. History is append-only; there is no automatic retention or cleanup.
+The database remains append-only: each run, route/date/airport coverage row, fare-card observation, and date summary is retained; repeated observations are added rather than replacing earlier records. Schema version 2 adds canonical city names and departure/arrival airport names and codes to `query_observations`. On first use, a version-1 database is migrated by adding nullable columns and an index; existing rows and observations are preserved. Airport-specific route keys distinguish same-city, same-date airport pairs while exported city and airport fields remain explicit.
 
-Useful exports (UTF-8 with BOM for spreadsheet compatibility):
+Useful exports (UTF-8 with BOM):
 
 ```bash
 .venv/bin/python daily_price_collector.py export-csv --kind flights --output exports/flights.csv
@@ -52,31 +58,16 @@ Useful exports (UTF-8 with BOM for spreadsheet compatibility):
 .venv/bin/python daily_price_collector.py export-csv --kind queries --output exports/query-coverage.csv
 ```
 
-## 08:00 GMT+8 operation
+The queries export includes planned/attempted status, canonical departure/arrival cities, airport names and codes, and dates. Full fare history remains in the existing flight-observation table.
 
-The executable command is `python3 daily_price_collector.py run`. **No recurring schedule has been created or started** in this implementation. If a local cron entry is later wanted, it must run on a host that is awake and available at that time. Example only (not installed):
+## 08:00 GMT+8 target and safety
 
-```cron
-CRON_TZ=Asia/Shanghai
-0 8 * * * cd /workspace/Ctrip-Crawler && /workspace/Ctrip-Crawler/.venv/bin/python daily_price_collector.py run >> /workspace/Ctrip-Crawler/logs/daily.log 2>&1
-```
+The intended daily start remains **08:00 GMT+8**. No recurring schedule was created or updated in this work. The requested future schedule remains a separate user-managed step.
 
-A sleeping/offline Sandbox cannot execute a cron job while unavailable; this example is not a guarantee of 08:00 execution. The one-off command can also be run manually from the project directory.
+The live check used a fresh temporary Chromium profile, direct connection, and default TLS certificate verification. The public page showed form wrappers, but the departure textbox was not uniquely accessible by its observed name, so no city autocomplete was entered. Ctrip's public airport-information pages were used only to verify airport entries; **no fare search or batch price query was submitted**. No account or user Cookie was used; no login, CAPTCHA bypass, access-control/anti-bot bypass, proxy, IP rotation, TLS override, or stealth parameter was used. The full 30-date calendar navigation also remains unverified.
 
-## Safety and failure semantics
-
-- Each run creates all 300 expected query rows before collection. The run and every attempted/unattempted query receive a status.
-- A CAPTCHA, login/password prompt, authentication challenge, access denial, HTTP 401/403/429, or explicit login-required response stops that run. The affected query is recorded as `blocked`; the remainder is `not_run`.
-- Selector changes, unverified city suggestions/date cells, a response mismatch, a schema change, or a network/parse error stop the run with an `error` and `not_run` remainder. There is **no automatic retry, account/Cookie access, proxy, IP rotation, TLS override, stealth flag, or bypass**.
-- A successful empty nonstop-economy result is recorded as `no_results`; it still counts as a completed query. A full `completed` run requires all 300 queries to end in `success` or `no_results`.
-- The live public DOM inspection verified the departure and arrival textboxes by accessible name `可输入城市或机场`, and the read-only date textbox by `请选择日期`, within the observed form containers. The selected date is read from `u_remark`. The search itself must still verify the selected city/date on the page and match the captured response. If the UI does not expose a unique city suggestion or enabled date cell, the query is not submitted.
-- **Current live blocker:** typing `上海` exposes three airport-level POI choices—浦东国际机场 (PVG), 虹桥国际机场 (SHA), and 金山水上通用机场 (JS2)—not a verified city-level selection. The collector refuses to choose one because that would narrow the requested city-level scope. The evidence is retained in `tests/fixtures/ctrip_city_suggestions_excerpt.html`. Consequently the single controlled runner validation stopped before Search, and no live fare query was submitted.
-- The live DOM exposed date titles and day cells, but next/previous-month navigation has not been verified. Even after the city-level mapping is resolved, the full 30-date live workflow still needs a controlled validation of its calendar navigation; do not claim the 300-query run is live-verified.
-
-## Offline tests
+Offline tests:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
-
-The offline suite covers the 30-day inclusive window, all 10 directed routes/300 expected queries, direct-economy filtering, separate transfer summaries, append-only SQLite history, schema version/indexes, blocked/partial coverage, and separate CSV exports. A passing offline suite is not proof that the live site will permit a full 300-query run.

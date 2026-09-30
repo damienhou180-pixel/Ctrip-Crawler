@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TIME_ZONE = ZoneInfo("Asia/Shanghai")
 SUCCESS_QUERY_STATUSES = ("success", "no_results")
 
@@ -22,6 +22,11 @@ def gmt8_now() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _coverage_city_key(city: str, airport_code: str | None) -> str:
+    """Keep the legacy unique key while distinguishing city airport pairs."""
+    return f"{city} [{airport_code}]" if airport_code else city
 
 
 class PriceHistoryStore:
@@ -54,6 +59,22 @@ class PriceHistoryStore:
             )
         if version == SCHEMA_VERSION:
             return
+        if version == 1:
+            with self.connection:
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN departure_city_name TEXT")
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN departure_airport_code TEXT")
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN departure_airport_name TEXT")
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN arrival_city_name TEXT")
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN arrival_airport_code TEXT")
+                self.connection.execute("ALTER TABLE query_observations ADD COLUMN arrival_airport_name TEXT")
+                self.connection.execute(
+                    """CREATE INDEX idx_queries_airport_route_date
+                       ON query_observations(departure_city_name, departure_airport_code,
+                                             arrival_city_name, arrival_airport_code,
+                                             departure_date, captured_at)"""
+                )
+                self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            return
         if version != 0:
             raise RuntimeError(f"No migration path from database schema version {version}.")
 
@@ -77,7 +98,13 @@ class PriceHistoryStore:
                     query_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL REFERENCES runs(run_id),
                     departure_city TEXT NOT NULL,
+                    departure_city_name TEXT,
+                    departure_airport_code TEXT,
+                    departure_airport_name TEXT,
                     arrival_city TEXT NOT NULL,
+                    arrival_city_name TEXT,
+                    arrival_airport_code TEXT,
+                    arrival_airport_name TEXT,
                     departure_date TEXT NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('pending','running','success','no_results','blocked','error','not_run')),
                     captured_at TEXT,
@@ -142,6 +169,10 @@ class PriceHistoryStore:
                     ON query_observations(run_id, status);
                 CREATE INDEX idx_queries_route_date
                     ON query_observations(departure_city, arrival_city, departure_date, captured_at);
+                CREATE INDEX idx_queries_airport_route_date
+                    ON query_observations(departure_city_name, departure_airport_code,
+                                          arrival_city_name, arrival_airport_code,
+                                          departure_date, captured_at);
                 CREATE INDEX idx_flights_run_route_date
                     ON flight_observations(run_id, departure_city, arrival_city, departure_date);
                 CREATE INDEX idx_flights_flight_date_captured
@@ -154,7 +185,7 @@ class PriceHistoryStore:
             )
             self.connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
-    def create_run(self, run_id: str, scope: Iterable[dict[str, str]], started_at: str | None = None) -> None:
+    def create_run(self, run_id: str, scope: Iterable[dict[str, Any]], started_at: str | None = None) -> None:
         queries = list(scope)
         with self.connection:
             self.connection.execute(
@@ -164,21 +195,47 @@ class PriceHistoryStore:
             )
             self.connection.executemany(
                 """INSERT INTO query_observations
-                   (run_id, departure_city, arrival_city, departure_date, status)
-                   VALUES (?, ?, ?, ?, 'pending')""",
+                   (run_id, departure_city, departure_city_name, departure_airport_code,
+                    departure_airport_name, arrival_city, arrival_city_name,
+                    arrival_airport_code, arrival_airport_name, departure_date, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
                 [
-                    (run_id, item["departure_city"], item["arrival_city"], item["departure_date"])
+                    (
+                        run_id,
+                        _coverage_city_key(item["departure_city"], item.get("departure_airport_code")),
+                        item["departure_city"],
+                        item.get("departure_airport_code"),
+                        item.get("departure_airport_name"),
+                        _coverage_city_key(item["arrival_city"], item.get("arrival_airport_code")),
+                        item["arrival_city"],
+                        item.get("arrival_airport_code"),
+                        item.get("arrival_airport_name"),
+                        item["departure_date"],
+                    )
                     for item in queries
                 ],
             )
 
-    def mark_query_running(self, run_id: str, departure_city: str, arrival_city: str, departure_date: str) -> None:
+    def mark_query_running(
+        self,
+        run_id: str,
+        departure_city: str,
+        arrival_city: str,
+        departure_date: str,
+        departure_airport_code: str | None = None,
+        arrival_airport_code: str | None = None,
+    ) -> None:
         with self.connection:
             cursor = self.connection.execute(
                 """UPDATE query_observations SET status='running'
                    WHERE run_id=? AND departure_city=? AND arrival_city=? AND departure_date=?
                    AND status='pending'""",
-                (run_id, departure_city, arrival_city, departure_date),
+                (
+                    run_id,
+                    _coverage_city_key(departure_city, departure_airport_code),
+                    _coverage_city_key(arrival_city, arrival_airport_code),
+                    departure_date,
+                ),
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("Query scope row was not pending exactly once.")
@@ -193,6 +250,8 @@ class PriceHistoryStore:
         status: str,
         captured_at: str,
         source: str,
+        departure_airport_code: str | None = None,
+        arrival_airport_code: str | None = None,
         error: str | None = None,
         observations: Iterable[dict[str, Any]] = (),
         summary: dict[str, Any] | None = None,
@@ -216,8 +275,8 @@ class PriceHistoryStore:
                     (summary or {}).get("direct_itinerary_count"),
                     len(observation_rows),
                     run_id,
-                    departure_city,
-                    arrival_city,
+                    _coverage_city_key(departure_city, departure_airport_code),
+                    _coverage_city_key(arrival_city, arrival_airport_code),
                     departure_date,
                 ),
             )
@@ -226,7 +285,12 @@ class PriceHistoryStore:
             query = self.connection.execute(
                 """SELECT query_id FROM query_observations
                    WHERE run_id=? AND departure_city=? AND arrival_city=? AND departure_date=?""",
-                (run_id, departure_city, arrival_city, departure_date),
+                (
+                    run_id,
+                    _coverage_city_key(departure_city, departure_airport_code),
+                    _coverage_city_key(arrival_city, arrival_airport_code),
+                    departure_date,
+                ),
             ).fetchone()
             query_id = int(query["query_id"])
 

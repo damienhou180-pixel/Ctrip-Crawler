@@ -101,7 +101,13 @@
               {
                 "flightNo": "CA101",
                 "marketAirlineName": "中国国际航空",
+                "departureCityName": "上海",
+                "departureAirportName": "上海虹桥国际机场",
+                "departureAirportCode": "SHA",
                 "departureDateTime": "2026-09-30 13:30",
+                "arrivalCityName": "北京",
+                "arrivalAirportName": "北京首都国际机场",
+                "arrivalAirportCode": "PEK",
                 "arrivalDateTime": "2026-09-30 16:00",
                 "stopCount": 0
               }
