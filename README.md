@@ -2,7 +2,7 @@
 
 ## Daily price history collector
 
-新的每日安全采集入口、SQLite schema、CSV 导出、运行方式和限制见 [DAILY_PRICE_HISTORY.md](DAILY_PRICE_HISTORY.md)。机场级矩阵按上海 PVG/SHA 与五个目的城市各机场双向配对：若五城机场数为 `n_i`、总和为 `S`，30 天每日运行上限为 `30 × 4 × S = 120S`；本次证据只完整确认成都 2 个机场，其余四城未核实，程序会在触碰浏览器或数据库前 fail closed，不启动票价采集。历史仍按每次观测追加到 SQLite。
+新的每日安全采集入口、SQLite schema、CSV 导出、运行方式和限制见 [DAILY_PRICE_HISTORY.md](DAILY_PRICE_HISTORY.md)。携程“国内机场”目录列出的五城航空机场为北京 PEK/PKX、广州 CAN、深圳 SZX、成都 TFU/CTU、乌鲁木齐 URC，共 `S_directory=7`：对应 14 组上海—目的机场配对、28 条有向航线/日、30 天目录口径候选量 `30 × 4 × 7 = 840`。机场攻略目录不证明搜索 autocomplete 选项完整；因此运行时五城 `n_i` 与 `S` 仍未知，程序保持 fail closed，不启动票价采集。广州 ZTI/NSZ/PFT 和深圳 ZYK 是客运码头/邮轮母港，不计入航空机场。历史仍按每次观测追加到 SQLite。
 
 > **安全说明：** 新入口使用普通 Chromium、默认 TLS 校验、无账号/用户 Cookie、无代理或反自动化参数、单线程且至少 5 秒节流；登录、验证码、访问拒绝、未知 DOM 或响应不匹配会停止当前 run 并保留部分覆盖状态。此文档没有安装或启动每日 schedule。
 

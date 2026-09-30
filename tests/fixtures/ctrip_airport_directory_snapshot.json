@@ -1,0 +1,38 @@
+{
+  "source_title": "机场攻略",
+  "source_section": "国内机场",
+  "observed_on": "2026-09-30",
+  "source_url": "https://flights.ctrip.com/booking/airport-guides.html",
+  "airport_entries_by_city": {
+    "北京": [
+      {"name": "首都国际机场", "code": "PEK", "url": "https://flights.ctrip.com/booking/airport-pek"},
+      {"name": "大兴国际机场", "code": "PKX", "url": "https://flights.ctrip.com/booking/airport-pkx"}
+    ],
+    "广州": [
+      {"name": "白云国际机场", "code": "CAN", "url": "https://flights.ctrip.com/booking/airport-can"}
+    ],
+    "深圳": [
+      {"name": "宝安国际机场", "code": "SZX", "url": "https://flights.ctrip.com/booking/airport-szx"}
+    ],
+    "成都": [
+      {"name": "天府国际机场", "code": "TFU", "url": "https://flights.ctrip.com/booking/airport-tfu"},
+      {"name": "双流国际机场", "code": "CTU", "url": "https://flights.ctrip.com/booking/airport-ctu"}
+    ],
+    "乌鲁木齐": [
+      {"name": "天山国际机场", "code": "URC", "url": "https://flights.ctrip.com/booking/airport-urc", "evidence_note": "Separately verified Ctrip airport page; not a complete autocomplete listing."}
+    ],
+    "上海": [
+      {"name": "虹桥国际机场", "code": "SHA", "url": "https://flights.ctrip.com/booking/airport-sha"},
+      {"name": "浦东国际机场", "code": "PVG", "url": "https://flights.ctrip.com/booking/airport-pvg"}
+    ]
+  },
+  "excluded_non_airport_directory_entries": [
+    {"city": "广州", "name": "东莞虎门港澳码头", "code": "ZTI", "kind": "passenger ferry terminal", "url": "https://flights.ctrip.com/booking/airport-zti"},
+    {"city": "广州", "name": "广州南沙港客运码头", "code": "NSZ", "kind": "passenger port terminal", "url": "https://flights.ctrip.com/booking/airport-nsz"},
+    {"city": "广州", "name": "琶洲港澳客运口岸码头", "code": "PFT", "kind": "passenger port terminal", "url": "https://flights.ctrip.com/booking/airport-pft"},
+    {"city": "深圳", "name": "蛇口邮轮母港", "code": "ZYK", "kind": "cruise port", "url": "https://flights.ctrip.com/booking/airport-zyk"}
+  ],
+  "autocomplete_completeness": "The airport-directory page does not state that its entries exactly match or exhaust the domestic flight-search autocomplete. Runtime collection must verify a unique visible airport option and code; until each destination city is complete, scope generation remains fail-closed.",
+  "origin_scope": ["PVG", "SHA"],
+  "dropdown_only_origin_entry_excluded_by_user_scope": {"name": "金山水上通用机场", "code": "JS2"}
+}

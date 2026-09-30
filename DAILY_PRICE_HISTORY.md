@@ -1,38 +1,46 @@
 # Daily Flight Price History Collector
 
-This guide describes the anonymous, append-only airport-pair collector. It does not use the legacy login, account, Cookie, proxy, retry, or challenge-handling flows.
+This guide documents the anonymous, append-only airport-pair collector and the distinction between Ctrip's public airport directory and its live search autocomplete. Directory counts below are not treated as proof that the runtime selector is exhaustive.
 
-## Requested airport scope and current evidence
+## Requested airport scope and Ctrip directory evidence
 
-The requested Shanghai endpoints are **PVG (浦东国际机场)** and **SHA (虹桥国际机场)** only. The Ctrip Shanghai dropdown excerpt also contained **JS2 (金山水上通用机场)**; JS2 is deliberately excluded because the requested origin scope is PVG + SHA.
+The requested Shanghai endpoints are **PVG (浦东国际机场)** and **SHA (虹桥国际机场)** only. A previous Shanghai dropdown excerpt also showed **JS2 (金山水上通用机场)**; JS2 is deliberately outside the requested PVG/SHA scope.
 
-Ctrip's public airport directory supports these destination entries, but the evidence does not establish a complete airport-selector inventory for four cities. Only Chengdu is treated as complete, based on the two entries in Ctrip's [domestic airport directory](https://flights.ctrip.com/booking/airport-guides.html). Airport pages and a directory are public information sources, not proof that a flight-search dropdown exposes no additional options.
+The Ctrip [airport guide / domestic-airport directory](https://flights.ctrip.com/booking/airport-guides.html) lists the following destination-city airport entries. Urumqi's **URC** identity was separately supported by its [Ctrip airport page](https://flights.ctrip.com/booking/airport-urc).
 
-| Destination | Ctrip-listed airport entries | Complete `n_i`? | Evidence status |
+| Destination | Included airline-airport entries in the directory | Listed count | Full autocomplete list verified? |
 | --- | --- | ---: | --- |
-| 北京 | 首都国际机场 **PEK**, 大兴国际机场 **PKX** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html)) | Unknown | Two entries are supported, but not proven to be every selector choice. |
-| 广州 | 白云国际机场 **CAN** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html), [airport page](https://flights.ctrip.com/booking/airport-baiyun/)) | Unknown | CAN is supported; completeness of the city selector is not established. |
-| 深圳 | 宝安国际机场 **SZX** ([Ctrip airport directory](https://flights.ctrip.com/booking/airport-guides.html), [airport page](https://flights.ctrip.com/booking/airport-szx/jichangjianjie.html)) | Unknown | SZX is supported; completeness of the city selector is not established. |
-| 成都 | 天府国际机场 **TFU**, 双流国际机场 **CTU** ([Ctrip domestic airport directory](https://flights.ctrip.com/booking/airport-guides.html), [TFU page](https://flights.ctrip.com/booking/airport-tfu), [CTU page](https://flights.ctrip.com/booking/airport-ctu)) | **2** | Both Chengdu entries are listed in the Ctrip domestic-airport directory. The live search textbox itself was not accessible for a dropdown check in this run. |
-| 乌鲁木齐 | 天山国际机场 **URC** ([Ctrip airport page](https://flights.ctrip.com/booking/airport-urc)) | Unknown | URC is supported; the page does not enumerate every selector choice. |
+| 北京 | 首都国际机场 **PEK**, 大兴国际机场 **PKX** | 2 | No |
+| 广州 | 白云国际机场 **CAN** | 1 | No |
+| 深圳 | 宝安国际机场 **SZX** | 1 | No |
+| 成都 | 天府国际机场 **TFU**, 双流国际机场 **CTU** | 2 | No |
+| 乌鲁木齐 | 天山国际机场 **URC** | 1 | No |
+| **Total directory-listed destination airports** |  | **7** | **No** |
 
-The full matrix is **not numerically computable yet**: four `n_i` values remain unknown. Partial directory counts must not be substituted for complete city counts.
+The same directory also contains Guangzhou passenger-terminal entries **ZTI**, **NSZ**, and **PFT**, and Shenzhen cruise-port entry **ZYK**. Their names identify passenger ports/terminals, not airline airports, so they are recorded in the evidence fixture but excluded from flight routes. The reviewed page is an airport-guide directory; it does **not** state that its rows are identical to, or exhaustive for, the domestic flight-search autocomplete.
 
-## Matrix and fail-closed behavior
+The source snapshot is retained at `tests/fixtures/ctrip_airport_directory_snapshot.json`. It records the seven included airport rows, excluded port rows, their Ctrip links, and the evidence boundary. The airport list in `airport_scope.py` is therefore the exact **directory-derived candidate list**, not a claim that all runtime selector choices are known.
 
-For each destination airport, pair both Shanghai origin airports in both directions: PVG → destination, SHA → destination, destination → PVG, and destination → SHA. Across 30 natural dates beginning on the GMT+8 run date, the expected query count is:
+## Candidate matrix and runtime fail-closed rule
+
+For the seven directory-listed destination airports, there are `2 × 7 = 14` distinct Shanghai-origin/destination airport pairs (PVG or SHA paired with each destination). Each pair creates two directed routes, one in each direction, so the directory-derived matrix is:
 
 ```text
-S = sum(n_i for 北京、广州、深圳、成都、乌鲁木齐)
-per-date directed routes = 4 × S
-total expected queries = 30 × 4 × S = 120S
+S_directory = 2 + 1 + 1 + 2 + 1 = 7
+Distinct airport pairs = 2 × S_directory = 14
+Directed routes per date = 2 × 14 = 4 × S_directory = 28
+30-date directory-based candidate rows = 30 × 28 = 30 × 4 × 7 = 840
 ```
 
-This is not `2 × S`, and the former city-level `300` count is obsolete. `airport_scope.py` is the shared source for the formula; scope construction, SQLite `runs.expected_queries`, coverage rows, run counters, query-coverage CSV export, and tests use the same airport-pair scope. The tests use a clearly synthetic inventory only to verify arithmetic; its result is not a real Ctrip query count.
+**840 is the exact count for the seven entries recorded in the Ctrip directory fixture. It is not a verified full-autocomplete maximum.** If the flight-search autocomplete contains another airport option absent from the directory, its complete matrix would differ. The executable selector counts `n_i`, their sum `S`, and `runs.expected_queries` remain unknown (`null`) until all five destination-city autocomplete lists are independently shown to be complete.
 
-Because Beijing, Guangzhou, Shenzhen, and Urumqi do not yet have evidence proving complete airport-option lists, both `run` and `run --dry-run` return `scope_unverified` before opening a browser, creating/updating a database, or submitting a flight search. The incomplete four-city lists are never silently narrowed or treated as complete. **No full batch collection is enabled in this state.**
+Before creating any runtime scope, the collector still requires complete evidence for every destination city. At collection time it also requires one unique visible option whose airport name and `data-u_remark` code match the requested airport. A city-level autocomplete result without a specifically verified airport is never treated as a single-airport city. The directory entries alone do not unlock the collector: both `run` and `run --dry-run` remain `scope_unverified` and stop before database or browser access until the full selector inventories are verified. No fare search or daily batch run was performed for this directory update.
 
-When all five inventories have complete evidence, a scope will cover 30 dates from today through today + 29 days, with only nonstop economy fares retained. Each submitted request and each direct itinerary must match the exact departure and arrival airport codes. The UI must expose one unique visible option whose displayed name and `data-u_remark` airport code match; otherwise the run stops before Search.
+The shared matrix formula is `30 × 4 × S`, not `2 × S`; the old city-level `300` count is obsolete. Once (and only if) every selector inventory is complete, the same airport-pair scope supplies the SQLite expected count, coverage rows, run counters, query-coverage CSV export, and tests. Synthetic complete inventories in unit tests exercise arithmetic only; they are not Ctrip airport evidence.
+
+## Date window, cabin, and operating target
+
+A future eligible run covers 30 natural dates, including the GMT+8 run date through that date + 29 days. The requested collection filters to domestic nonstop economy itineraries. The intended daily start remains **08:00 GMT+8**; no recurring schedule was created or updated.
 
 ## Local prerequisites
 
@@ -44,7 +52,7 @@ python3 -m venv .venv
 .venv/bin/python daily_price_collector.py init-db
 ```
 
-The default database path is `data/ctrip_price_history.sqlite3`. Initializing or opening an existing version-1 database applies only the additive version-2 schema migration; existing run, query, flight, and summary rows are retained.
+The default database path is `data/ctrip_price_history.sqlite3`. Initializing or opening an existing version-1 database applies only the additive version-2 schema migration; existing run, query, flight, and summary rows are retained. The directory-scope update itself does not migrate, rewrite, or delete the existing SQLite database.
 
 ## SQLite history and exports
 
@@ -60,13 +68,11 @@ Useful exports (UTF-8 with BOM):
 
 The queries export includes planned/attempted status, canonical departure/arrival cities, airport names and codes, and dates. Full fare history remains in the existing flight-observation table.
 
-## 08:00 GMT+8 target and safety
+## Safety and offline verification
 
-The intended daily start remains **08:00 GMT+8**. No recurring schedule was created or updated in this work. The requested future schedule remains a separate user-managed step.
+The collector uses ordinary Chromium with default TLS verification, no account or user Cookie, no login, no CAPTCHA bypass, no access-control or anti-bot bypass, no proxy/IP rotation, and no stealth parameters. The current source update changed only offline airport configuration, its evidence fixture, tests, and documentation; it did not run a fare search, a full collection, or a schedule.
 
-The live check used a fresh temporary Chromium profile, direct connection, and default TLS certificate verification. The public page showed form wrappers, but the departure textbox was not uniquely accessible by its observed name, so no city autocomplete was entered. Ctrip's public airport-information pages were used only to verify airport entries; **no fare search or batch price query was submitted**. No account or user Cookie was used; no login, CAPTCHA bypass, access-control/anti-bot bypass, proxy, IP rotation, TLS override, or stealth parameter was used. The full 30-date calendar navigation also remains unverified.
-
-Offline tests:
+Run the offline suite with:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v

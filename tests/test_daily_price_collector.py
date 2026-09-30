@@ -41,6 +41,7 @@ from ctrip_dom_selectors import CtripSelectorMismatch
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_batch_search_sample.json"
 CITY_SUGGESTIONS_FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_city_suggestions_excerpt.html"
+DIRECTORY_FIXTURE = ROOT / "tests" / "fixtures" / "ctrip_airport_directory_snapshot.json"
 SAMPLE_QUERY = Query("上海", "北京", "2026-09-30", "SHA", "虹桥国际机场", "PEK", "首都国际机场")
 CAPTURED_AT = "2026-09-30T08:00:00+08:00"
 
@@ -113,11 +114,47 @@ class DailyScopeTests(unittest.TestCase):
         self.assertTrue(all(q.departure_airport_code and q.arrival_airport_code for q in scope))
         self.assertEqual({q.departure_date for q in scope}, set(build_date_window(date(2026, 9, 30))))
 
+    def test_official_directory_airports_and_candidate_matrix_are_exact_but_not_executable(self):
+        snapshot = json.loads(DIRECTORY_FIXTURE.read_text(encoding="utf-8"))
+        expected_codes = {
+            city: [entry["code"] for entry in entries]
+            for city, entries in snapshot["airport_entries_by_city"].items()
+            if city in CITY_HUBS
+        }
+        configured_codes = {
+            city: [airport.code for airport in DESTINATION_AIRPORTS[city].airports]
+            for city in CITY_HUBS
+        }
+        self.assertEqual(configured_codes, expected_codes)
+
+        excluded_codes = {
+            entry["code"] for entry in snapshot["excluded_non_airport_directory_entries"]
+        }
+        self.assertTrue(excluded_codes.isdisjoint({code for codes in configured_codes.values() for code in codes}))
+
+        report = coverage_report()
+        directory_plan = report["directory_matrix"]
+        self.assertEqual(
+            directory_plan["directory_entry_counts_by_city"],
+            {"北京": 2, "广州": 1, "深圳": 1, "成都": 2, "乌鲁木齐": 1},
+        )
+        self.assertEqual(directory_plan["S_directory"], 7)
+        self.assertEqual(directory_plan["distinct_airport_pairs_per_period"], 14)
+        self.assertEqual(directory_plan["directed_routes_per_departure_date"], 28)
+        self.assertEqual(directory_plan["directory_based_candidate_queries"], 840)
+        self.assertIsNone(report["S"])
+        self.assertIsNone(report["expected_queries"])
+        self.assertEqual(set(report["unverified_cities"]), set(CITY_HUBS))
+        for city in CITY_HUBS:
+            self.assertFalse(report["airport_counts_by_city"][city]["selector_complete"])
+            self.assertIsNone(report["airport_counts_by_city"][city]["n_i"])
+
     def test_current_cities_without_complete_evidence_are_reported_and_fail_closed(self):
         report = coverage_report()
         counts = report["airport_counts_by_city"]
-        self.assertEqual(counts["成都"]["n_i"], 2)
-        for city in ("北京", "广州", "深圳", "乌鲁木齐"):
+        self.assertEqual(counts["成都"]["directory_entry_count"], 2)
+        for city in CITY_HUBS:
+            self.assertEqual(counts[city]["selector_complete"], False)
             self.assertIsNone(counts[city]["n_i"])
         self.assertEqual(report["S"], None)
         self.assertEqual(report["expected_queries"], None)
